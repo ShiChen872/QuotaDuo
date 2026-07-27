@@ -2,8 +2,6 @@
 
 本地 macOS 菜单栏应用，可视化 **Codex** 剩余配额与 **Cursor Pro** 用量。
 
-仿照 [QuotaDot](https://github.com/MeowkingCP/QuotaDot) 的思路：只读本地登录态，直接请求各服务端的用量接口，不经过任何中继服务器。
-
 ## 功能
 
 - 菜单栏常驻：显示各 Provider 中**最低剩余百分比**
