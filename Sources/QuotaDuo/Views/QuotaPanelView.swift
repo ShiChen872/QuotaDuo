@@ -19,7 +19,7 @@ struct QuotaPanelView: View {
 
     private var header: some View {
         HStack {
-            Text("QuotaBar")
+            Text("QuotaDuo")
                 .font(.headline)
             Spacer()
             Button {

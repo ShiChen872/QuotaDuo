@@ -1,18 +1,18 @@
 import SwiftUI
 
 @main
-enum QuotaBarMain {
+enum QuotaDuoMain {
     static func main() {
         if CommandLine.arguments.contains("--smoke-test") {
             SmokeTest.run()
             return
         }
 
-        QuotaBarApp.main()
+        QuotaDuoApp.main()
     }
 }
 
-struct QuotaBarApp: App {
+struct QuotaDuoApp: App {
     @State private var store = QuotaStore()
 
     var body: some Scene {
@@ -33,7 +33,7 @@ enum SmokeTest {
         let semaphore = DispatchSemaphore(value: 0)
         Task {
             defer { semaphore.signal() }
-            print("QuotaBar smoke test")
+            print("QuotaDuo smoke test")
             print("-------------------")
 
             do {

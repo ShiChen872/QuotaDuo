@@ -1,4 +1,4 @@
-# QuotaBar
+# QuotaDuo
 
 本地 macOS 菜单栏应用，可视化 **Codex** 剩余配额与 **Cursor Pro** 用量。
 
@@ -22,7 +22,7 @@
 ## 构建与运行
 
 ```bash
-cd QuotaBar
+cd QuotaDuo
 chmod +x script/build_and_run.sh
 ./script/build_and_run.sh debug --run
 ```
@@ -31,15 +31,15 @@ chmod +x script/build_and_run.sh
 
 ```bash
 ./script/build_and_run.sh
-# 产物：.build/QuotaBar.app
-open .build/QuotaBar.app
+# 产物：.build/QuotaDuo.app
+open .build/QuotaDuo.app
 ```
 
 命令行冒烟测试（不启动菜单栏 UI）：
 
 ```bash
 swift build
-.build/debug/QuotaBar --smoke-test
+.build/debug/QuotaDuo --smoke-test
 ```
 
 ## 鉴权说明
@@ -61,7 +61,7 @@ export CODEX_HOME="$HOME/.codex"             # 可选，默认 ~/.codex
 ## 项目结构
 
 ```text
-Sources/QuotaBar/
+Sources/QuotaDuo/
   App/         MenuBarExtra 入口
   Models/      统一用量模型
   Services/    Codex / Cursor 客户端
