@@ -10,20 +10,36 @@ struct CodexClient: Sendable {
         let usage = try JSONDecoder().decode(UsageEnvelope.self, from: data)
         let now = Date.now
 
-        let windows = [usage.rateLimit?.primaryWindow, usage.rateLimit?.secondaryWindow]
-            .compactMap { $0 }
-            .compactMap { usageLine(from: $0, now: now) }
+        // Dual windows: primary → Session, secondary → Weekly.
+        // Single window: fall back to duration / reset ETA heuristic.
+        let hasPrimary = usage.rateLimit?.primaryWindow?.usedPercent != nil
+        let hasSecondary = usage.rateLimit?.secondaryWindow?.usedPercent != nil
 
-        guard !windows.isEmpty else {
+        var lines: [UsageLine] = []
+        if let primary = usage.rateLimit?.primaryWindow {
+            let role: WindowRole = (hasPrimary && hasSecondary) ? .primary : .auto
+            if let line = usageLine(from: primary, role: role, now: now) {
+                lines.append(line)
+            }
+        }
+        if let secondary = usage.rateLimit?.secondaryWindow {
+            let role: WindowRole = (hasPrimary && hasSecondary) ? .secondary : .auto
+            if let line = usageLine(from: secondary, role: role, now: now) {
+                lines.append(line)
+            }
+        }
+
+        guard !lines.isEmpty else {
             throw CodexError.malformedUsage
         }
 
+        // De-dupe by label if both mapped to the same name.
         var unique: [String: UsageLine] = [:]
-        for line in windows {
+        for line in lines {
             unique[line.label] = line
         }
         let order: [String: Int] = ["Session": 0, "Weekly": 1]
-        let lines = unique.values.sorted {
+        lines = unique.values.sorted {
             (order[$0.label] ?? 99) < (order[$1.label] ?? 99)
         }
 
@@ -36,21 +52,37 @@ struct CodexClient: Sendable {
         )
     }
 
-    private func usageLine(from window: DirectWindow, now: Date) -> UsageLine? {
+    private enum WindowRole {
+        case primary
+        case secondary
+        case auto
+    }
+
+    private func usageLine(from window: DirectWindow, role: WindowRole, now: Date) -> UsageLine? {
         guard let usedPercent = window.usedPercent else { return nil }
         let duration = window.limitWindowSeconds
         let resetAt = window.resetAt.map { Date(timeIntervalSince1970: $0) }
-        let isShortWindow: Bool
-        if let duration {
-            isShortWindow = duration <= 12 * 60 * 60
-        } else if let resetAt {
-            isShortWindow = resetAt.timeIntervalSince(now) <= 12 * 60 * 60
-        } else {
-            return nil
+
+        let label: String
+        switch role {
+        case .primary:
+            label = "Session"
+        case .secondary:
+            label = "Weekly"
+        case .auto:
+            let isShort: Bool
+            if let duration {
+                isShort = duration <= 12 * 60 * 60
+            } else if let resetAt {
+                isShort = resetAt.timeIntervalSince(now) <= 12 * 60 * 60
+            } else {
+                return nil
+            }
+            label = isShort ? "Session" : "Weekly"
         }
 
         return UsageLine(
-            label: isShortWindow ? "Session" : "Weekly",
+            label: label,
             usedPercent: usedPercent.clampedPercent,
             resetsAt: resetAt,
             subtitle: nil

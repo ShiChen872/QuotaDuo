@@ -6,28 +6,43 @@ import Observation
 final class QuotaStore {
     var codex: ProviderLoadState = .idle
     var cursor: ProviderLoadState = .idle
+    /// Soft error while previous loaded data is still shown.
+    var codexError: String?
+    var cursorError: String?
     var isRefreshing = false
-    var lastRefreshedAt: Date?
+    /// Last time at least one provider refreshed successfully.
+    var lastSuccessfulRefreshAt: Date?
+    var lastAttemptAt: Date?
 
     private let codexClient = CodexClient()
     private let cursorClient = CursorClient()
     private var refreshTask: Task<Void, Never>?
     private let refreshInterval: TimeInterval = 5 * 60
 
-    var lowestRemainingPercent: Double? {
+    /// Compact menu-bar text, e.g. "C81·X79" or "81%".
+    var menuBarText: String? {
+        var parts: [String] = []
+        if case .loaded(let usage) = codex, let value = usage.primaryRemainingPercent {
+            parts.append("C\(Int(value.rounded()))")
+        }
+        if case .loaded(let usage) = cursor, let value = usage.primaryRemainingPercent {
+            parts.append("X\(Int(value.rounded()))")
+        }
+        guard !parts.isEmpty else { return nil }
+        if parts.count == 1 {
+            return "\(parts[0].dropFirst())%"
+        }
+        return parts.joined(separator: "·")
+    }
+
+    var menuBarLowestPrimary: Double? {
         let values = [codex, cursor].compactMap { state -> Double? in
             if case .loaded(let usage) = state {
-                return usage.lowestRemainingPercent
+                return usage.primaryRemainingPercent
             }
             return nil
         }
         return values.min()
-    }
-
-    var hasAnyData: Bool {
-        if case .loaded = codex { return true }
-        if case .loaded = cursor { return true }
-        return false
     }
 
     func start() {
@@ -53,7 +68,6 @@ final class QuotaStore {
 
         if case .idle = codex { codex = .loading }
         if case .idle = cursor { cursor = .loading }
-        // Keep previous loaded data visible while refreshing.
 
         async let codexResult: Result<ProviderUsage, Error> = {
             do { return .success(try await self.codexClient.fetch()) }
@@ -66,21 +80,39 @@ final class QuotaStore {
         }()
 
         let (codexOutcome, cursorOutcome) = await (codexResult, cursorResult)
+        lastAttemptAt = Date.now
+        var anySuccess = false
 
         switch codexOutcome {
         case .success(let usage):
             codex = .loaded(usage)
+            codexError = nil
+            anySuccess = true
         case .failure(let error):
-            codex = .unavailable(error.localizedDescription)
+            if case .loaded = codex {
+                codexError = error.localizedDescription
+            } else {
+                codex = .unavailable(error.localizedDescription)
+                codexError = nil
+            }
         }
 
         switch cursorOutcome {
         case .success(let usage):
             cursor = .loaded(usage)
+            cursorError = nil
+            anySuccess = true
         case .failure(let error):
-            cursor = .unavailable(error.localizedDescription)
+            if case .loaded = cursor {
+                cursorError = error.localizedDescription
+            } else {
+                cursor = .unavailable(error.localizedDescription)
+                cursorError = nil
+            }
         }
 
-        lastRefreshedAt = Date.now
+        if anySuccess {
+            lastSuccessfulRefreshAt = Date.now
+        }
     }
 }
