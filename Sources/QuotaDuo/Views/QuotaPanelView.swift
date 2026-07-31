@@ -3,18 +3,24 @@ import AppKit
 
 struct QuotaPanelView: View {
     var store: QuotaStore
+    @State private var launchAtLogin = LoginItemManager.isEnabled
+    @State private var loginItemMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
-            ProviderCard(title: "Codex", state: store.codex)
-            ProviderCard(title: "Cursor", state: store.cursor)
+            ProviderCard(title: "Codex", state: store.codex, softError: store.codexError)
+            ProviderCard(title: "Cursor", state: store.cursor, softError: store.cursorError)
 
+            settingsRow
             footer
         }
         .padding(14)
         .frame(width: 320)
+        .onAppear {
+            launchAtLogin = LoginItemManager.isEnabled
+        }
     }
 
     private var header: some View {
@@ -25,11 +31,44 @@ struct QuotaPanelView: View {
             Button {
                 Task { await store.refresh() }
             } label: {
-                Image(systemName: "arrow.clockwise")
+                if store.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
             }
             .buttonStyle(.borderless)
             .disabled(store.isRefreshing)
             .help("立即刷新")
+        }
+    }
+
+    private var settingsRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("登录时启动", isOn: Binding(
+                get: { launchAtLogin },
+                set: { newValue in
+                    if let error = LoginItemManager.setEnabled(newValue) {
+                        loginItemMessage = error
+                        launchAtLogin = LoginItemManager.isEnabled
+                    } else {
+                        loginItemMessage = nil
+                        launchAtLogin = LoginItemManager.isEnabled
+                        if launchAtLogin != newValue {
+                            loginItemMessage = LoginItemManager.statusDescription
+                        }
+                    }
+                }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.caption)
+
+            if let loginItemMessage {
+                Text(loginItemMessage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+            }
         }
     }
 
@@ -41,8 +80,12 @@ struct QuotaPanelView: View {
                 Text("刷新中…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if let at = store.lastRefreshedAt {
+            } else if let at = store.lastSuccessfulRefreshAt {
                 Text("更新于 \(Formatters.time.string(from: at))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if store.lastAttemptAt != nil {
+                Text("尚未成功刷新")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -59,6 +102,7 @@ struct QuotaPanelView: View {
 private struct ProviderCard: View {
     let title: String
     let state: ProviderLoadState
+    var softError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -76,6 +120,13 @@ private struct ProviderCard: View {
             }
 
             content
+
+            if let softError, case .loaded = state {
+                Label(softError, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -123,10 +174,12 @@ private struct ProviderCard: View {
                                     .lineLimit(1)
                             }
                             if let resetsAt = line.resetsAt {
-                                Text(Formatters.resetDescription(resetsAt))
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
+                                TimelineView(.periodic(from: .now, by: 30)) { context in
+                                    Text(Formatters.resetDescription(resetsAt, now: context.date))
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity)
@@ -145,8 +198,8 @@ enum Formatters {
         return formatter
     }()
 
-    static func resetDescription(_ date: Date) -> String {
-        let remaining = date.timeIntervalSinceNow
+    static func resetDescription(_ date: Date, now: Date = .now) -> String {
+        let remaining = date.timeIntervalSince(now)
         if remaining <= 0 {
             return "已重置"
         }

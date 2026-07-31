@@ -10,6 +10,14 @@ enum ProviderID: String, Sendable, CaseIterable {
         case .cursor: return "Cursor"
         }
     }
+
+    /// Labels that drive the menu-bar percentage for this provider.
+    var primaryLabels: Set<String> {
+        switch self {
+        case .codex: return ["Session", "Weekly"]
+        case .cursor: return ["Plan"]
+        }
+    }
 }
 
 struct UsageLine: Identifiable, Sendable, Equatable {
@@ -32,6 +40,13 @@ struct ProviderUsage: Identifiable, Sendable, Equatable {
     let lines: [UsageLine]
     let fetchedAt: Date
     let detail: String?
+
+    /// Lowest remaining among primary lines; falls back to all lines.
+    var primaryRemainingPercent: Double? {
+        let primary = lines.filter { providerId.primaryLabels.contains($0.label) }
+        let pool = primary.isEmpty ? lines : primary
+        return pool.map(\.remainingPercent).min()
+    }
 
     var lowestRemainingPercent: Double? {
         lines.map(\.remainingPercent).min()

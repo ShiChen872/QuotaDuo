@@ -10,16 +10,55 @@ struct CursorClient: Sendable {
         let session = try loadSession()
         let now = Date.now
 
-        async let summaryData = try? request(usageSummaryURL, method: "GET", session: session, body: nil)
-        async let periodData = try? request(
-            currentPeriodURL,
-            method: "POST",
-            session: session,
-            body: Data("{}".utf8)
-        )
+        async let summaryOutcome: Result<Data, Error> = {
+            do { return .success(try await self.request(self.usageSummaryURL, method: "GET", session: session, body: nil)) }
+            catch { return .failure(error) }
+        }()
+        async let periodOutcome: Result<Data, Error> = {
+            do {
+                return .success(
+                    try await self.request(
+                        self.currentPeriodURL,
+                        method: "POST",
+                        session: session,
+                        body: Data("{}".utf8)
+                    )
+                )
+            } catch {
+                return .failure(error)
+            }
+        }()
 
-        let summary = await summaryData.flatMap { try? JSONDecoder().decode(UsageSummary.self, from: $0) }
-        let period = await periodData.flatMap { try? JSONDecoder().decode(CurrentPeriodUsage.self, from: $0) }
+        let (summaryResult, periodResult) = await (summaryOutcome, periodOutcome)
+
+        var authFailures: [Error] = []
+        var requestFailures: [Error] = []
+
+        let summary: UsageSummary?
+        switch summaryResult {
+        case .success(let data):
+            summary = try? JSONDecoder().decode(UsageSummary.self, from: data)
+        case .failure(let error):
+            summary = nil
+            if Self.isAuthFailure(error) {
+                authFailures.append(error)
+            } else {
+                requestFailures.append(error)
+            }
+        }
+
+        let period: CurrentPeriodUsage?
+        switch periodResult {
+        case .success(let data):
+            period = try? JSONDecoder().decode(CurrentPeriodUsage.self, from: data)
+        case .failure(let error):
+            period = nil
+            if Self.isAuthFailure(error) {
+                authFailures.append(error)
+            } else {
+                requestFailures.append(error)
+            }
+        }
 
         var lines: [UsageLine] = []
         var planName: String?
@@ -43,22 +82,23 @@ struct CursorClient: Sendable {
                     limit: limitCents,
                     percentUsed: usedPct
                 )
-                let subtitle: String?
+                let money: String?
                 if let usedCents, let limitCents {
-                    subtitle = "\(formatCents(usedCents)) / \(formatCents(limitCents))"
-                    detail = "已用 \(subtitle!)"
+                    let text = "\(formatCents(usedCents)) / \(formatCents(limitCents))"
+                    money = text
+                    detail = "已用 \(text)"
                 } else if let remaining = plan.remaining {
-                    subtitle = "剩余 \(formatCents(remaining))"
-                    detail = subtitle
+                    money = "剩余 \(formatCents(remaining))"
+                    detail = money
                 } else {
-                    subtitle = nil
+                    money = nil
                 }
                 lines.append(
                     UsageLine(
                         label: "Plan",
                         usedPercent: usedPct.clampedPercent,
                         resetsAt: resetAt ?? plan.billingCycleEnd,
-                        subtitle: subtitle
+                        subtitle: money
                     )
                 )
             }
@@ -97,19 +137,20 @@ struct CursorClient: Sendable {
                     ?? percent(used: usedCents, limit: limitCents)
 
                 if !lines.contains(where: { $0.label == "Plan" }), let usedPct {
-                    let subtitle: String?
+                    let money: String?
                     if let usedCents, let limitCents {
-                        subtitle = "\(formatCents(usedCents)) / \(formatCents(limitCents))"
-                        detail = detail ?? "已用 \(subtitle!)"
+                        let text = "\(formatCents(usedCents)) / \(formatCents(limitCents))"
+                        money = text
+                        detail = detail ?? "已用 \(text)"
                     } else {
-                        subtitle = nil
+                        money = nil
                     }
                     lines.append(
                         UsageLine(
                             label: "Plan",
                             usedPercent: usedPct.clampedPercent,
                             resetsAt: resetAt,
-                            subtitle: subtitle
+                            subtitle: money
                         )
                     )
                 } else if let usedCents, let limitCents {
@@ -211,6 +252,15 @@ struct CursorClient: Sendable {
         }
 
         guard !lines.isEmpty else {
+            if let auth = authFailures.first {
+                throw auth
+            }
+            if let request = requestFailures.first {
+                throw request
+            }
+            if summary == nil && period == nil {
+                throw CursorError.requestFailed("用量接口均无有效响应")
+            }
             throw CursorError.malformedUsage
         }
 
@@ -229,6 +279,13 @@ struct CursorClient: Sendable {
             fetchedAt: now,
             detail: detail
         )
+    }
+
+    private static func isAuthFailure(_ error: Error) -> Bool {
+        if let cursor = error as? CursorError, case .authUnavailable = cursor {
+            return true
+        }
+        return false
     }
 
     private func percent(used: Double?, limit: Double?) -> Double? {
@@ -316,6 +373,31 @@ struct CursorClient: Sendable {
     }
 
     private func readAccessToken(from dbURL: URL) throws -> String {
+        // Copy DB (and WAL/SHM if present) so reads don't fight the Cursor IDE.
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent(
+            "QuotaDuo-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let tempDB = tempDir.appendingPathComponent("state.vscdb")
+        try fm.copyItem(at: dbURL, to: tempDB)
+        for suffix in ["-wal", "-shm"] {
+            let side = URL(fileURLWithPath: dbURL.path + suffix)
+            if fm.fileExists(atPath: side.path) {
+                try? fm.copyItem(
+                    at: side,
+                    to: URL(fileURLWithPath: tempDB.path + suffix)
+                )
+            }
+        }
+
+        return try readAccessTokenDirect(from: tempDB)
+    }
+
+    private func readAccessTokenDirect(from dbURL: URL) throws -> String {
         var db: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
         let openResult = sqlite3_open_v2(dbURL.path, &db, flags, nil)

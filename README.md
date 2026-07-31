@@ -4,11 +4,12 @@
 
 ## 功能
 
-- 菜单栏常驻：显示各 Provider 中**最低剩余百分比**
+- 菜单栏常驻：显示主指标剩余百分比（`C81·X79` 或单侧 `81%`）
 - 下拉面板：
-  - **Codex**：Session（短窗口）与 Weekly 环形进度、重置倒计时、套餐类型
+  - **Codex**：Session（primary）与 Weekly（secondary）环形进度、重置倒计时、套餐类型
   - **Cursor**：当前计费周期 Plan / Auto / API 等用量环与金额摘要
-- 每 **5 分钟**自动刷新，面板内可手动刷新
+- 每 **5 分钟**自动刷新，面板内可手动刷新；刷新失败时**保留上次成功数据**
+- 支持「登录时启动」（需安装到 `~/Applications`）
 - 某一 Provider 失败不影响另一个
 
 ## 要求
@@ -25,12 +26,18 @@ chmod +x script/build_and_run.sh
 ./script/build_and_run.sh debug --run
 ```
 
-仅构建：
+脚本会：
+
+1. `swift build`
+2. 组装 `.build/QuotaDuo.app`
+3. 安装到 `~/Applications/QuotaDuo.app`（替换前自动退出旧进程）
+4. 可选 `--run` 启动
+
+仅安装：
 
 ```bash
 ./script/build_and_run.sh
-# 产物：.build/QuotaDuo.app
-open .build/QuotaDuo.app
+open ~/Applications/QuotaDuo.app
 ```
 
 命令行冒烟测试（不启动菜单栏 UI）：
