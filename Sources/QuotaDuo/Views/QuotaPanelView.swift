@@ -10,8 +10,17 @@ struct QuotaPanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
-            ProviderCard(title: "Codex", state: store.codex, softError: store.codexError)
-            ProviderCard(title: "Cursor", state: store.cursor, softError: store.cursorError)
+            if store.visibleSlots.isEmpty {
+                emptyState
+            } else {
+                ForEach(store.visibleSlots) { slot in
+                    ProviderCard(
+                        title: slot.id.displayName,
+                        state: slot.state,
+                        softError: slot.softError
+                    )
+                }
+            }
 
             settingsRow
             footer
@@ -42,6 +51,20 @@ struct QuotaPanelView: View {
             .disabled(store.isRefreshing)
             .help("立即刷新")
         }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("未检测到已登录的服务")
+                .font(.subheadline.weight(.medium))
+            Text("请先登录 Codex、Cursor 或 Claude Code，然后点刷新。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var settingsRow: some View {
@@ -136,6 +159,9 @@ private struct ProviderCard: View {
     @ViewBuilder
     private var content: some View {
         switch state {
+        case .hidden:
+            EmptyView()
+
         case .idle, .loading:
             HStack(spacing: 8) {
                 ProgressView()

@@ -1,13 +1,26 @@
 import Foundation
 
-enum ProviderID: String, Sendable, CaseIterable {
+enum ProviderID: String, Sendable, CaseIterable, Identifiable {
     case codex
     case cursor
+    case claude
+
+    var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .codex: return "Codex"
         case .cursor: return "Cursor"
+        case .claude: return "Claude"
+        }
+    }
+
+    /// Compact prefix for the menu bar (C / X / A).
+    var menuBarPrefix: String {
+        switch self {
+        case .codex: return "C"
+        case .cursor: return "X"
+        case .claude: return "A"
         }
     }
 
@@ -16,6 +29,7 @@ enum ProviderID: String, Sendable, CaseIterable {
         switch self {
         case .codex: return ["Session", "Weekly"]
         case .cursor: return ["Plan"]
+        case .claude: return ["Session", "Weekly"]
         }
     }
 }
@@ -54,10 +68,32 @@ struct ProviderUsage: Identifiable, Sendable, Equatable {
 }
 
 enum ProviderLoadState: Sendable, Equatable {
+    /// No local credentials — do not reserve UI space.
+    case hidden
     case idle
     case loading
     case loaded(ProviderUsage)
     case unavailable(String)
+}
+
+struct ProviderSlot: Identifiable, Sendable, Equatable {
+    let id: ProviderID
+    var state: ProviderLoadState
+    var softError: String?
+
+    var isVisible: Bool {
+        if case .hidden = state { return false }
+        return true
+    }
+}
+
+enum AuthErrorDetector {
+    static func isAuthUnavailable(_ error: Error) -> Bool {
+        if let error = error as? CodexError, case .authUnavailable = error { return true }
+        if let error = error as? CursorError, case .authUnavailable = error { return true }
+        if let error = error as? ClaudeError, case .authUnavailable = error { return true }
+        return false
+    }
 }
 
 extension Double {

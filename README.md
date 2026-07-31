@@ -1,22 +1,24 @@
 # QuotaDuo
 
-本地 macOS 菜单栏应用，可视化 **Codex** 剩余配额与 **Cursor Pro** 用量。
+本地 macOS 菜单栏应用，按本机登录态可视化 **Codex**、**Cursor**、**Claude Code** 剩余用量。
+
+未登录的服务**不占面板空间**——你只有 Codex + Cursor 时就显示两个；哪天登录了 Claude Code，刷新后自动多一张卡。
 
 ## 功能
 
-- 菜单栏常驻：显示主指标剩余百分比（`C81·X79` 或单侧 `81%`）
-- 下拉面板：
-  - **Codex**：Session（primary）与 Weekly（secondary）环形进度、重置倒计时、套餐类型
-  - **Cursor**：当前计费周期 Plan / Auto / API 等用量环与金额摘要
-- 每 **5 分钟**自动刷新，面板内可手动刷新；刷新失败时**保留上次成功数据**
-- 支持「登录时启动」（需安装到 `~/Applications`）
-- 某一 Provider 失败不影响另一个
+- 菜单栏常驻：主指标剩余百分比（如 `C81·X79`，有 Claude 时再加 `·A72`）
+- 下拉面板（按登录态动态显示）：
+  - **Codex**：Session / Weekly
+  - **Cursor**：Plan / Auto / API
+  - **Claude**：Session（5h）/ Weekly（7d）
+- 每 **5 分钟**自动刷新；失败时**保留上次成功数据**
+- 「登录时启动」（需安装到 `~/Applications`）
 
 ## 要求
 
 - macOS 14+
 - Xcode Command Line Tools / Swift 6
-- 本机已登录 Codex（`~/.codex/auth.json`）和/或 Cursor IDE
+- 本机已登录上述任一服务
 
 ## 构建与运行
 
@@ -26,59 +28,50 @@ chmod +x script/build_and_run.sh
 ./script/build_and_run.sh debug --run
 ```
 
-脚本会：
-
-1. `swift build`
-2. 组装 `.build/QuotaDuo.app`
-3. 安装到 `~/Applications/QuotaDuo.app`（替换前自动退出旧进程）
-4. 可选 `--run` 启动
-
-仅安装：
+脚本会构建、安装到 `~/Applications/QuotaDuo.app`（启动前退出旧进程），并可选启动。
 
 ```bash
+# 仅安装
 ./script/build_and_run.sh
 open ~/Applications/QuotaDuo.app
-```
 
-命令行冒烟测试（不启动菜单栏 UI）：
-
-```bash
-swift build
-.build/debug/QuotaDuo --smoke-test
+# 冒烟测试
+swift build && .build/debug/QuotaDuo --smoke-test
 ```
 
 ## 鉴权说明
 
 | Provider | 来源 | 接口 |
 |----------|------|------|
-| Codex | `~/.codex/auth.json` 的 `access_token` | `GET https://chatgpt.com/backend-api/wham/usage` |
-| Cursor | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` 中的 `cursorAuth/accessToken` | `GET https://cursor.com/api/usage-summary`、`POST https://cursor.com/api/dashboard/get-current-period-usage` |
+| Codex | `~/.codex/auth.json` | `GET https://chatgpt.com/backend-api/wham/usage` |
+| Cursor | Cursor `state.vscdb` → `cursorAuth/accessToken` | `usage-summary` / `get-current-period-usage` |
+| Claude | `~/.claude/.credentials.json`、Keychain `Claude Code-credentials`，或 `CLAUDE_CODE_OAUTH_TOKEN` | `GET https://api.anthropic.com/api/oauth/usage`（必要时刷新 OAuth） |
 
 可选环境变量：
 
 ```bash
-export CURSOR_SESSION_TOKEN='user_…::eyJ…'   # 或浏览器 Cookie WorkosCursorSessionToken 原值
-export CODEX_HOME="$HOME/.codex"             # 可选，默认 ~/.codex
+export CURSOR_SESSION_TOKEN='user_…::eyJ…'
+export CODEX_HOME="$HOME/.codex"
+export CLAUDE_CONFIG_DIR="$HOME/.claude"
+export CLAUDE_CODE_OAUTH_TOKEN='…'   # 可选覆盖
 ```
-
-若 Cursor 本地 token 失效，可在 [cursor.com/dashboard](https://cursor.com/dashboard) 登录后，从 DevTools → Application → Cookies 复制 `WorkosCursorSessionToken` 设为环境变量再启动。
 
 ## 项目结构
 
 ```text
 Sources/QuotaDuo/
   App/         MenuBarExtra 入口
-  Models/      统一用量模型
-  Services/    Codex / Cursor 客户端
-  Stores/      刷新与状态
+  Models/      统一用量模型（动态 Provider）
+  Services/    Codex / Cursor / Claude 客户端
+  Stores/      刷新与可见性
   Views/       菜单栏标签与下拉面板
 ```
 
 ## 隐私与风险
 
-- 凭证只读本地文件，请求直达官方域名，无第三方上传。
-- Codex / Cursor 用量接口均为非公开、可能变更的内部 API；字段变动时部分圆环可能暂时无法解析。
-- 本项目与 OpenAI、Cursor 无关，相关商标归属其所有者。
+- 默认只读本地登录态；Claude OAuth 刷新成功时会写回凭证文件/Keychain（与 Claude Code 官方刷新行为一致）。
+- 用量接口为非公开、可能变更的内部 API。
+- 与 OpenAI、Cursor、Anthropic 无关，商标归属其所有者。
 
 ## License
 

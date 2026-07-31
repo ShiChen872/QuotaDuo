@@ -36,33 +36,40 @@ enum SmokeTest {
             print("QuotaDuo smoke test")
             print("-------------------")
 
-            do {
-                let usage = try await CodexClient().fetch()
-                print("[Codex] OK plan=\(usage.plan ?? "-")")
-                for line in usage.lines {
-                    let reset = line.resetsAt.map { Formatters.resetDescription($0) } ?? "-"
-                    print(
-                        "  - \(line.label): remaining \(Int(line.remainingPercent.rounded()))% used \(Int(line.usedPercent.rounded()))% reset=\(reset)"
-                    )
-                }
-            } catch {
-                print("[Codex] FAIL: \(error.localizedDescription)")
+            await probe(name: "Codex", configured: CodexClient().isConfigured()) {
+                try await CodexClient().fetch()
             }
-
-            do {
-                let usage = try await CursorClient().fetch()
-                print("[Cursor] OK plan=\(usage.plan ?? "-") detail=\(usage.detail ?? "-")")
-                for line in usage.lines {
-                    let reset = line.resetsAt.map { Formatters.resetDescription($0) } ?? "-"
-                    let subtitle = line.subtitle.map { " (\($0))" } ?? ""
-                    print(
-                        "  - \(line.label)\(subtitle): remaining \(Int(line.remainingPercent.rounded()))% used \(Int(line.usedPercent.rounded()))% reset=\(reset)"
-                    )
-                }
-            } catch {
-                print("[Cursor] FAIL: \(error.localizedDescription)")
+            await probe(name: "Cursor", configured: CursorClient().isConfigured()) {
+                try await CursorClient().fetch()
+            }
+            await probe(name: "Claude", configured: ClaudeClient().isConfigured()) {
+                try await ClaudeClient().fetch()
             }
         }
-        _ = semaphore.wait(timeout: .now() + 30)
+        _ = semaphore.wait(timeout: .now() + 45)
+    }
+
+    private static func probe(
+        name: String,
+        configured: Bool,
+        fetch: () async throws -> ProviderUsage
+    ) async {
+        if !configured {
+            print("[\(name)] HIDDEN (未检测到本地登录态)")
+            return
+        }
+        do {
+            let usage = try await fetch()
+            print("[\(name)] OK plan=\(usage.plan ?? "-") detail=\(usage.detail ?? "-")")
+            for line in usage.lines {
+                let reset = line.resetsAt.map { Formatters.resetDescription($0) } ?? "-"
+                let subtitle = line.subtitle.map { " (\($0))" } ?? ""
+                print(
+                    "  - \(line.label)\(subtitle): remaining \(Int(line.remainingPercent.rounded()))% used \(Int(line.usedPercent.rounded()))% reset=\(reset)"
+                )
+            }
+        } catch {
+            print("[\(name)] FAIL: \(error.localizedDescription)")
+        }
     }
 }

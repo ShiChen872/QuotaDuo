@@ -6,6 +6,11 @@ struct CursorClient: Sendable {
     private let currentPeriodURL = URL(string: "https://cursor.com/api/dashboard/get-current-period-usage")!
     private let maximumPayloadSize = 1_048_576
 
+    /// Local credential probe (no network).
+    func isConfigured() -> Bool {
+        (try? loadSession()) != nil
+    }
+
     func fetch() async throws -> ProviderUsage {
         let session = try loadSession()
         let now = Date.now

@@ -4,6 +4,11 @@ struct CodexClient: Sendable {
     private let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     private let maximumPayloadSize = 1_048_576
 
+    /// Local credential probe (no network).
+    func isConfigured() -> Bool {
+        (try? loadAuth()) != nil
+    }
+
     func fetch() async throws -> ProviderUsage {
         let auth = try loadAuth()
         let data = try await request(usageURL, auth: auth)

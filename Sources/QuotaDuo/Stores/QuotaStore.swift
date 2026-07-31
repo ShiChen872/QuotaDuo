@@ -4,11 +4,12 @@ import Observation
 @MainActor
 @Observable
 final class QuotaStore {
-    var codex: ProviderLoadState = .idle
-    var cursor: ProviderLoadState = .idle
-    /// Soft error while previous loaded data is still shown.
-    var codexError: String?
-    var cursorError: String?
+    private(set) var slots: [ProviderID: ProviderSlot] = Dictionary(
+        uniqueKeysWithValues: ProviderID.allCases.map {
+            ($0, ProviderSlot(id: $0, state: .idle, softError: nil))
+        }
+    )
+
     var isRefreshing = false
     /// Last time at least one provider refreshed successfully.
     var lastSuccessfulRefreshAt: Date?
@@ -16,17 +17,25 @@ final class QuotaStore {
 
     private let codexClient = CodexClient()
     private let cursorClient = CursorClient()
+    private let claudeClient = ClaudeClient()
     private var refreshTask: Task<Void, Never>?
     private let refreshInterval: TimeInterval = 5 * 60
 
-    /// Compact menu-bar text, e.g. "C81·X79" or "81%".
+    /// Providers that should occupy panel space (configured / loaded / error).
+    var visibleSlots: [ProviderSlot] {
+        ProviderID.allCases.compactMap { id in
+            guard let slot = slots[id], slot.isVisible else { return nil }
+            return slot
+        }
+    }
+
+    /// Compact menu-bar text, e.g. "C81·X79·A72" or "81%".
     var menuBarText: String? {
         var parts: [String] = []
-        if case .loaded(let usage) = codex, let value = usage.primaryRemainingPercent {
-            parts.append("C\(Int(value.rounded()))")
-        }
-        if case .loaded(let usage) = cursor, let value = usage.primaryRemainingPercent {
-            parts.append("X\(Int(value.rounded()))")
+        for id in ProviderID.allCases {
+            guard case .loaded(let usage) = slots[id]?.state,
+                  let value = usage.primaryRemainingPercent else { continue }
+            parts.append("\(id.menuBarPrefix)\(Int(value.rounded()))")
         }
         guard !parts.isEmpty else { return nil }
         if parts.count == 1 {
@@ -36,13 +45,10 @@ final class QuotaStore {
     }
 
     var menuBarLowestPrimary: Double? {
-        let values = [codex, cursor].compactMap { state -> Double? in
-            if case .loaded(let usage) = state {
-                return usage.primaryRemainingPercent
-            }
-            return nil
-        }
-        return values.min()
+        ProviderID.allCases.compactMap { id -> Double? in
+            guard case .loaded(let usage) = slots[id]?.state else { return nil }
+            return usage.primaryRemainingPercent
+        }.min()
     }
 
     func start() {
@@ -66,53 +72,90 @@ final class QuotaStore {
         isRefreshing = true
         defer { isRefreshing = false }
 
-        if case .idle = codex { codex = .loading }
-        if case .idle = cursor { cursor = .loading }
-
-        async let codexResult: Result<ProviderUsage, Error> = {
-            do { return .success(try await self.codexClient.fetch()) }
-            catch { return .failure(error) }
-        }()
-
-        async let cursorResult: Result<ProviderUsage, Error> = {
-            do { return .success(try await self.cursorClient.fetch()) }
-            catch { return .failure(error) }
-        }()
-
-        let (codexOutcome, cursorOutcome) = await (codexResult, cursorResult)
-        lastAttemptAt = Date.now
-        var anySuccess = false
-
-        switch codexOutcome {
-        case .success(let usage):
-            codex = .loaded(usage)
-            codexError = nil
-            anySuccess = true
-        case .failure(let error):
-            if case .loaded = codex {
-                codexError = error.localizedDescription
+        // Probe local auth first — unconfigured providers stay hidden.
+        var active: [ProviderID] = []
+        for id in ProviderID.allCases {
+            if isConfigured(id) {
+                active.append(id)
+                if case .hidden = slots[id]?.state {
+                    slots[id]?.state = .idle
+                }
+                if case .idle = slots[id]?.state {
+                    slots[id]?.state = .loading
+                }
             } else {
-                codex = .unavailable(error.localizedDescription)
-                codexError = nil
+                slots[id] = ProviderSlot(id: id, state: .hidden, softError: nil)
             }
         }
 
-        switch cursorOutcome {
-        case .success(let usage):
-            cursor = .loaded(usage)
-            cursorError = nil
-            anySuccess = true
-        case .failure(let error):
-            if case .loaded = cursor {
-                cursorError = error.localizedDescription
-            } else {
-                cursor = .unavailable(error.localizedDescription)
-                cursorError = nil
-            }
+        guard !active.isEmpty else {
+            lastAttemptAt = Date.now
+            return
         }
 
-        if anySuccess {
-            lastSuccessfulRefreshAt = Date.now
+        await withTaskGroup(of: (ProviderID, Result<ProviderUsage, Error>).self) { group in
+            for id in active {
+                group.addTask {
+                    let result: Result<ProviderUsage, Error>
+                    do {
+                        switch id {
+                        case .codex:
+                            result = .success(try await self.codexClient.fetch())
+                        case .cursor:
+                            result = .success(try await self.cursorClient.fetch())
+                        case .claude:
+                            result = .success(try await self.claudeClient.fetch())
+                        }
+                    } catch {
+                        result = .failure(error)
+                    }
+                    return (id, result)
+                }
+            }
+
+            var anySuccess = false
+            for await (id, outcome) in group {
+                apply(id: id, outcome: outcome, anySuccess: &anySuccess)
+            }
+            lastAttemptAt = Date.now
+            if anySuccess {
+                lastSuccessfulRefreshAt = Date.now
+            }
+        }
+    }
+
+    private func isConfigured(_ id: ProviderID) -> Bool {
+        switch id {
+        case .codex: return codexClient.isConfigured()
+        case .cursor: return cursorClient.isConfigured()
+        case .claude: return claudeClient.isConfigured()
+        }
+    }
+
+    private func apply(
+        id: ProviderID,
+        outcome: Result<ProviderUsage, Error>,
+        anySuccess: inout Bool
+    ) {
+        switch outcome {
+        case .success(let usage):
+            slots[id] = ProviderSlot(id: id, state: .loaded(usage), softError: nil)
+            anySuccess = true
+        case .failure(let error):
+            if AuthErrorDetector.isAuthUnavailable(error) {
+                // Credentials disappeared mid-flight or are unusable — hide.
+                slots[id] = ProviderSlot(id: id, state: .hidden, softError: nil)
+                return
+            }
+            if case .loaded = slots[id]?.state {
+                slots[id]?.softError = error.localizedDescription
+            } else {
+                slots[id] = ProviderSlot(
+                    id: id,
+                    state: .unavailable(error.localizedDescription),
+                    softError: nil
+                )
+            }
         }
     }
 }
