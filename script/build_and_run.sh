@@ -30,8 +30,12 @@ fi
 echo "==> assemble $STAGING_APP"
 rm -rf "$STAGING_APP"
 mkdir -p "$MACOS_DIR"
+mkdir -p "$CONTENTS/Resources"
 cp "$BIN" "$MACOS_DIR/QuotaDuo"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
+if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
+  cp "$ROOT/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
+fi
 chmod +x "$MACOS_DIR/QuotaDuo"
 
 if command -v codesign >/dev/null 2>&1; then
