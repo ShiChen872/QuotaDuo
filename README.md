@@ -43,7 +43,7 @@ swift build && .build/debug/QuotaDuo --smoke-test
 
 | Provider | 来源 | 接口 |
 |----------|------|------|
-| Codex | `~/.codex/auth.json` | `GET https://chatgpt.com/backend-api/wham/usage` |
+| Codex | `~/.codex/auth.json` | `GET https://chatgpt.com/backend-api/wham/usage`（token 临近过期或 401 时 OAuth refresh 并写回） |
 | Cursor | Cursor `state.vscdb` → `cursorAuth/accessToken` | `usage-summary` / `get-current-period-usage` |
 | Claude | `~/.claude/.credentials.json`、Keychain `Claude Code-credentials`，或 `CLAUDE_CODE_OAUTH_TOKEN` | `GET https://api.anthropic.com/api/oauth/usage`（必要时刷新 OAuth） |
 
