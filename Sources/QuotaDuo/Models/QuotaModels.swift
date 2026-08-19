@@ -4,6 +4,7 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
     case codex
     case cursor
     case claude
+    case skywork
 
     var id: String { rawValue }
 
@@ -12,15 +13,17 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
         case .codex: return "Codex"
         case .cursor: return "Cursor"
         case .claude: return "Claude"
+        case .skywork: return "Skywork"
         }
     }
 
-    /// Compact prefix for the menu bar (C / X / A).
+    /// Compact prefix for the menu bar (C / X / A / S).
     var menuBarPrefix: String {
         switch self {
         case .codex: return "C"
         case .cursor: return "X"
         case .claude: return "A"
+        case .skywork: return "S"
         }
     }
 
@@ -30,6 +33,7 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
         case .codex: return ["Session", "Weekly"]
         case .cursor: return ["Plan"]
         case .claude: return ["Session", "Weekly"]
+        case .skywork: return ["月度"]
         }
     }
 }
@@ -92,6 +96,7 @@ enum AuthErrorDetector {
         if let error = error as? CodexError, case .authUnavailable = error { return true }
         if let error = error as? CursorError, case .authUnavailable = error { return true }
         if let error = error as? ClaudeError, case .authUnavailable = error { return true }
+        if let error = error as? SkyworkError, case .authUnavailable = error { return true }
         return false
     }
 }

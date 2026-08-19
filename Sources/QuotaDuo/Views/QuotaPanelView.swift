@@ -57,7 +57,7 @@ struct QuotaPanelView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("未检测到已登录的服务")
                 .font(.subheadline.weight(.medium))
-            Text("请先登录 Codex、Cursor 或 Claude Code，然后点刷新。")
+            Text("请先登录 Codex、Cursor、Claude Code，或在 Chrome 登录 Skywork，然后点刷新。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

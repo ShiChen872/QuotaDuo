@@ -45,6 +45,9 @@ enum SmokeTest {
             await probe(name: "Claude", configured: ClaudeClient().isConfigured()) {
                 try await ClaudeClient().fetch()
             }
+            await probe(name: "Skywork", configured: SkyworkClient().isConfigured()) {
+                try await SkyworkClient().fetch()
+            }
         }
         _ = semaphore.wait(timeout: .now() + 45)
     }
