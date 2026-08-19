@@ -14,11 +14,30 @@ struct SkyworkClient: Sendable {
     private let maximumPayloadSize = 1_048_576
 
     func isConfigured() -> Bool {
-        (try? loadSession()) != nil
+        if let env = ProcessInfo.processInfo.environment["SKYWORK_COOKIE"], !env.isEmpty {
+            return true
+        }
+        if Self.state.session() != nil {
+            return true
+        }
+        if FileManager.default.fileExists(atPath: Self.sessionFileURL().path) {
+            return true
+        }
+        return chromeHasTokenCookie()
     }
 
     func fetch() async throws -> ProviderUsage {
-        let session = try loadSession()
+        let first = try loadSession(forceChrome: false)
+        do {
+            return try await fetchWithSession(first)
+        } catch let error as SkyworkError where error.isAuthFailure && first.canRefreshFromChrome {
+            Self.state.clearSession()
+            try? FileManager.default.removeItem(at: Self.sessionFileURL())
+            return try await fetchWithSession(try loadSession(forceChrome: true))
+        }
+    }
+
+    private func fetchWithSession(_ session: SkyworkSession) async throws -> ProviderUsage {
         let secret = await loadAuthorizeSecret()
         let now = Date.now
 
@@ -132,9 +151,22 @@ struct SkyworkClient: Sendable {
         return calendar.date(byAdding: .month, value: 1, to: thisMonth) ?? thisMonth
     }
 
-    private func loadSession() throws -> SkyworkSession {
+    private func loadSession(forceChrome: Bool) throws -> SkyworkSession {
         if let env = ProcessInfo.processInfo.environment["SKYWORK_COOKIE"], !env.isEmpty {
-            return SkyworkSession(cookieHeader: env, deviceHash: cookieValue(named: "k_device_hash", in: env) ?? "")
+            return SkyworkSession(
+                cookieHeader: env,
+                deviceHash: cookieValue(named: "k_device_hash", in: env) ?? "",
+                canRefreshFromChrome: false
+            )
+        }
+
+        if !forceChrome, let cached = Self.state.session() {
+            return cached
+        }
+
+        if !forceChrome, let stored = try? readPersistedSession() {
+            Self.state.store(session: stored)
+            return stored
         }
 
         let cookies = try readChromeCookies()
@@ -146,7 +178,87 @@ struct SkyworkClient: Sendable {
             guard let value = cookies[name], !value.isEmpty else { return nil }
             return "\(name)=\(value)"
         }.joined(separator: "; ")
-        return SkyworkSession(cookieHeader: header, deviceHash: cookies["k_device_hash"] ?? "")
+        let session = SkyworkSession(
+            cookieHeader: header,
+            deviceHash: cookies["k_device_hash"] ?? "",
+            canRefreshFromChrome: false
+        )
+        Self.state.store(
+            session: SkyworkSession(
+                cookieHeader: header,
+                deviceHash: cookies["k_device_hash"] ?? "",
+                canRefreshFromChrome: true
+            )
+        )
+        persistSession(session)
+        return session
+    }
+
+    static func sessionFileURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/quotaduo/skywork.json")
+    }
+
+    private func readPersistedSession() throws -> SkyworkSession {
+        let data = try Data(contentsOf: Self.sessionFileURL())
+        let stored = try JSONDecoder().decode(PersistedSession.self, from: data)
+        guard !stored.cookieHeader.isEmpty else {
+            throw SkyworkError.authUnavailable("本地 Skywork 会话为空")
+        }
+        return SkyworkSession(
+            cookieHeader: stored.cookieHeader,
+            deviceHash: stored.deviceHash,
+            canRefreshFromChrome: true
+        )
+    }
+
+    private func persistSession(_ session: SkyworkSession) {
+        let url = Self.sessionFileURL()
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let stored = PersistedSession(cookieHeader: session.cookieHeader, deviceHash: session.deviceHash)
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        try? data.write(to: url, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func chromeHasTokenCookie() -> Bool {
+        let chromeRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Google/Chrome", isDirectory: true)
+        return chromeCookieDatabases(in: chromeRoot).contains { databaseHasSkyworkToken($0) }
+    }
+
+    private func databaseHasSkyworkToken(_ dbURL: URL) -> Bool {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("QuotaDuo-\(UUID().uuidString)", isDirectory: true)
+        guard (try? fm.createDirectory(at: tempDir, withIntermediateDirectories: true)) != nil else {
+            return false
+        }
+        defer { try? fm.removeItem(at: tempDir) }
+        let tempDB = tempDir.appendingPathComponent("Cookies")
+        guard (try? fm.copyItem(at: dbURL, to: tempDB)) != nil else { return false }
+        for suffix in ["-wal", "-shm"] {
+            let side = URL(fileURLWithPath: dbURL.path + suffix)
+            if fm.fileExists(atPath: side.path) {
+                try? fm.copyItem(at: side, to: URL(fileURLWithPath: tempDB.path + suffix))
+            }
+        }
+        var db: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(tempDB.path, &db, flags, nil) == SQLITE_OK, let db else {
+            return false
+        }
+        defer { sqlite3_close(db) }
+        let sql = """
+        SELECT 1 FROM cookies
+        WHERE host_key LIKE '%skywork.ai%' AND name = 'token'
+        LIMIT 1;
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW
     }
 
     private func cookieValue(named name: String, in header: String) -> String? {
@@ -262,6 +374,10 @@ struct SkyworkClient: Sendable {
     }
 
     private func chromeEncryptionKey() throws -> Data {
+        if let cached = Self.state.encryptionKey() {
+            return cached
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "Chrome Safe Storage",
@@ -271,13 +387,8 @@ struct SkyworkClient: Sendable {
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        let passwordData: Data
-        if status == errSecSuccess, let data = result as? Data, !data.isEmpty {
-            passwordData = data
-        } else if let data = try? chromeSafeStorageViaSecurityCLI(), !data.isEmpty {
-            passwordData = data
-        } else {
-            throw SkyworkError.authUnavailable("无法读取 Chrome Safe Storage（请在钥匙串弹窗中允许 QuotaDuo），或设置 SKYWORK_COOKIE")
+        guard status == errSecSuccess, let passwordData = result as? Data, !passwordData.isEmpty else {
+            throw SkyworkError.authUnavailable("无法读取 Chrome Safe Storage。若弹出钥匙串请点一次「始终允许」，或设置 SKYWORK_COOKIE")
         }
 
         var derived = Data(count: 16)
@@ -302,27 +413,8 @@ struct SkyworkClient: Sendable {
         guard deriveStatus == kCCSuccess else {
             throw SkyworkError.authUnavailable("Chrome Cookie 密钥派生失败")
         }
+        Self.state.store(encryptionKey: derived)
         return derived
-    }
-
-    private func chromeSafeStorageViaSecurityCLI() throws -> Data {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-w", "-s", "Chrome Safe Storage", "-a", "Chrome"]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw SkyworkError.authUnavailable("无法读取 Chrome Safe Storage")
-        }
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw SkyworkError.authUnavailable("Chrome Safe Storage 读取失败")
-        }
-        return Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
     }
 
     private func decryptChromeCookie(_ blob: Data, key: Data, databaseVersion: Int) throws -> String {
@@ -483,6 +575,11 @@ enum SkyworkError: LocalizedError {
     case requestFailed(String)
     case malformedUsage
 
+    var isAuthFailure: Bool {
+        if case .authUnavailable = self { return true }
+        return false
+    }
+
     var errorDescription: String? {
         switch self {
         case .authUnavailable(let message): return message
@@ -493,7 +590,51 @@ enum SkyworkError: LocalizedError {
 }
 
 private extension SkyworkClient {
+    static let state = SharedState()
+
+    final class SharedState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cachedSession: SkyworkSession?
+        private var cachedEncryptionKey: Data?
+
+        func session() -> SkyworkSession? {
+            lock.lock()
+            defer { lock.unlock() }
+            return cachedSession
+        }
+
+        func store(session: SkyworkSession) {
+            lock.lock()
+            cachedSession = session
+            lock.unlock()
+        }
+
+        func clearSession() {
+            lock.lock()
+            cachedSession = nil
+            lock.unlock()
+        }
+
+        func encryptionKey() -> Data? {
+            lock.lock()
+            defer { lock.unlock() }
+            return cachedEncryptionKey
+        }
+
+        func store(encryptionKey: Data) {
+            lock.lock()
+            cachedEncryptionKey = encryptionKey
+            lock.unlock()
+        }
+    }
+
     struct SkyworkSession: Sendable {
+        let cookieHeader: String
+        let deviceHash: String
+        let canRefreshFromChrome: Bool
+    }
+
+    struct PersistedSession: Codable, Sendable {
         let cookieHeader: String
         let deviceHash: String
     }

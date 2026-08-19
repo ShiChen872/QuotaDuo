@@ -47,7 +47,7 @@ swift build && .build/debug/QuotaDuo --smoke-test
 | Codex | `~/.codex/auth.json` | `GET https://chatgpt.com/backend-api/wham/usage`（token 临近过期或 401 时 OAuth refresh 并写回） |
 | Cursor | Cursor `state.vscdb` → `cursorAuth/accessToken` | `usage-summary` / `get-current-period-usage` |
 | Claude | `~/.claude/.credentials.json`、Keychain `Claude Code-credentials`，或 `CLAUDE_CODE_OAUTH_TOKEN` | `GET https://api.anthropic.com/api/oauth/usage`（必要时刷新 OAuth） |
-| Skywork | Chrome Cookie（`skywork.ai` 的 `token`），或 `SKYWORK_COOKIE` | `POST https://api.skywork.ai/marketing/mark/detail`（会员 + 存留 + 登录） |
+| Skywork | Chrome Cookie（首次解密后缓存到 `~/.config/quotaduo/skywork.json`），或 `SKYWORK_COOKIE` | `POST https://api.skywork.ai/marketing/mark/detail`（会员 + 存留 + 登录） |
 
 可选环境变量：
 
