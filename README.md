@@ -11,7 +11,7 @@
   - **Codex**：Session / Weekly
   - **Cursor**：Plan / Auto / API
   - **Claude**：Session（5h）/ Weekly（7d）
-  - **Skywork**：可花积分（会员月度 + 存留 + 每日登录；相对 10000/月）
+  - **Skywork**：可花积分（会员月度 10000 + 额外充值，叠加显示；登录赠礼计入总额）
 - 每 **5 分钟**自动刷新；失败时**保留上次成功数据**
 - 「登录时启动」（需安装到 `~/Applications`）
 
@@ -47,7 +47,7 @@ swift build && .build/debug/QuotaDuo --smoke-test
 | Codex | `~/.codex/auth.json` | `GET https://chatgpt.com/backend-api/wham/usage`（token 临近过期或 401 时 OAuth refresh 并写回） |
 | Cursor | Cursor `state.vscdb` → `cursorAuth/accessToken` | `usage-summary` / `get-current-period-usage` |
 | Claude | `~/.claude/.credentials.json`、Keychain `Claude Code-credentials`，或 `CLAUDE_CODE_OAUTH_TOKEN` | `GET https://api.anthropic.com/api/oauth/usage`（必要时刷新 OAuth） |
-| Skywork | Chrome Cookie（首次解密后缓存到 `~/.config/quotaduo/skywork.json`），或 `SKYWORK_COOKIE` | `POST https://api.skywork.ai/marketing/mark/detail`（会员 + 存留 + 登录） |
+| Skywork | Chrome Cookie（首次解密后缓存到 `~/.config/quotaduo/skywork.json`），或 `SKYWORK_COOKIE` | `POST https://api.skywork.ai/marketing/mark/get_user_benefits`（月度 + 充值叠加；不再轮询会触发设备超限的 detail） |
 
 可选环境变量：
 

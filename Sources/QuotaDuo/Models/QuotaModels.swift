@@ -33,7 +33,7 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
         case .codex: return ["Session", "Weekly"]
         case .cursor: return ["Plan"]
         case .claude: return ["Session", "Weekly"]
-        case .skywork: return ["月度"]
+        case .skywork: return ["月度", "充值"]
         }
     }
 }
@@ -58,9 +58,31 @@ struct ProviderUsage: Identifiable, Sendable, Equatable {
     let lines: [UsageLine]
     let fetchedAt: Date
     let detail: String?
+    /// When set, menu bar uses this instead of the lowest primary line.
+    /// Skywork stacks monthly + recharge against the 10,000 monthly quota.
+    let menuBarRemainingPercent: Double?
+
+    init(
+        providerId: ProviderID,
+        plan: String?,
+        lines: [UsageLine],
+        fetchedAt: Date,
+        detail: String?,
+        menuBarRemainingPercent: Double? = nil
+    ) {
+        self.providerId = providerId
+        self.plan = plan
+        self.lines = lines
+        self.fetchedAt = fetchedAt
+        self.detail = detail
+        self.menuBarRemainingPercent = menuBarRemainingPercent
+    }
 
     /// Lowest remaining among primary lines; falls back to all lines.
     var primaryRemainingPercent: Double? {
+        if let menuBarRemainingPercent {
+            return menuBarRemainingPercent.clampedPercent
+        }
         let primary = lines.filter { providerId.primaryLabels.contains($0.label) }
         let pool = primary.isEmpty ? lines : primary
         return pool.map(\.remainingPercent).min()
