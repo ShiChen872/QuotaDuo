@@ -185,6 +185,7 @@ private struct ProviderCard: View {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 HStack(alignment: .top, spacing: 14) {

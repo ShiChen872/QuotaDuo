@@ -4,6 +4,7 @@ import SQLite3
 struct CursorClient: Sendable {
     private let usageSummaryURL = URL(string: "https://cursor.com/api/usage-summary")!
     private let currentPeriodURL = URL(string: "https://cursor.com/api/dashboard/get-current-period-usage")!
+    private let aggregatedUsageURL = URL(string: "https://cursor.com/api/dashboard/get-aggregated-usage-events")!
     private let maximumPayloadSize = 1_048_576
 
     /// Local credential probe (no network).
@@ -33,8 +34,21 @@ struct CursorClient: Sendable {
                 return .failure(error)
             }
         }()
+        async let tokenOutcome: TokenTotals? = {
+            do {
+                let data = try await self.request(
+                    self.aggregatedUsageURL,
+                    method: "POST",
+                    session: session,
+                    body: Data("{\"teamId\":0}".utf8)
+                )
+                return TokenTotals(decoding: data)
+            } catch {
+                return nil
+            }
+        }()
 
-        let (summaryResult, periodResult) = await (summaryOutcome, periodOutcome)
+        let (summaryResult, periodResult, tokenTotals) = await (summaryOutcome, periodOutcome, tokenOutcome)
 
         var authFailures: [Error] = []
         var requestFailures: [Error] = []
@@ -277,6 +291,10 @@ struct CursorClient: Sendable {
         let ordered = orderedLabels.compactMap { seen[$0] }
             + seen.keys.filter { !orderedLabels.contains($0) }.sorted().compactMap { seen[$0] }
 
+        if let tokenLine = tokenTotals?.detailLine() {
+            detail = detail.map { "\($0)\n\(tokenLine)" } ?? tokenLine
+        }
+
         return ProviderUsage(
             providerId: .cursor,
             plan: planName,
@@ -335,6 +353,28 @@ struct CursorClient: Sendable {
     /// API monetary fields are USD cents.
     private func formatCents(_ cents: Double) -> String {
         String(format: "$%.2f", cents / 100.0)
+    }
+
+    /// Compact token counts: 1591475 → 1.6M, 193135750 → 193M.
+    private static func formatTokenCount(_ value: Double) -> String {
+        let magnitude = abs(value)
+        let scaled: Double
+        let suffix: String
+        if magnitude >= 1_000_000 {
+            scaled = value / 1_000_000
+            suffix = "M"
+        } else if magnitude >= 1_000 {
+            scaled = value / 1_000
+            suffix = "K"
+        } else {
+            return String(Int(value.rounded()))
+        }
+        let digits = abs(scaled) >= 100 ? 0 : 1
+        var text = String(format: "%.\(digits)f", scaled)
+        if text.hasSuffix(".0") {
+            text.removeLast(2)
+        }
+        return text + suffix
     }
 
     private func loadSession() throws -> CursorSession {
@@ -644,6 +684,66 @@ private extension CursorClient {
         let totalPercentUsed: Double?
         let autoPercentUsed: Double?
         let apiPercentUsed: Double?
+    }
+
+    struct TokenTotals: Sendable {
+        let total: Double
+
+        init?(decoding data: Data) {
+            guard let totals = try? JSONDecoder().decode(AggregatedUsage.self, from: data) else {
+                return nil
+            }
+            let total = (totals.totalInputTokens ?? 0)
+                + (totals.totalOutputTokens ?? 0)
+                + (totals.totalCacheWriteTokens ?? 0)
+                + (totals.totalCacheReadTokens ?? 0)
+            guard total > 0 else { return nil }
+            self.total = total
+        }
+
+        /// Billing page total: input + output + cache write + cache read.
+        func detailLine() -> String? {
+            guard total > 0 else { return nil }
+            return "Token \(CursorClient.formatTokenCount(total))"
+        }
+    }
+
+    struct AggregatedUsage: Decodable {
+        let totalInputTokens: Double?
+        let totalOutputTokens: Double?
+        let totalCacheWriteTokens: Double?
+        let totalCacheReadTokens: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case totalInputTokens
+            case totalOutputTokens
+            case totalCacheWriteTokens
+            case totalCacheReadTokens
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            totalInputTokens = Self.decodeCount(container, .totalInputTokens)
+            totalOutputTokens = Self.decodeCount(container, .totalOutputTokens)
+            totalCacheWriteTokens = Self.decodeCount(container, .totalCacheWriteTokens)
+            totalCacheReadTokens = Self.decodeCount(container, .totalCacheReadTokens)
+        }
+
+        private static func decodeCount(
+            _ container: KeyedDecodingContainer<CodingKeys>,
+            _ key: CodingKeys
+        ) -> Double? {
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return value
+            }
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return Double(value)
+            }
+            if let raw = try? container.decodeIfPresent(String.self, forKey: key) {
+                return Double(raw.replacingOccurrences(of: ",", with: ""))
+            }
+            return nil
+        }
     }
 }
 
