@@ -9,7 +9,7 @@
 - 菜单栏常驻：主指标剩余百分比（如 `C81·X79`，有 Claude 时再加 `·A72`，有 Skywork 时再加 `·S100`）
 - 下拉面板（按登录态动态显示）：
   - **Codex**：Session / Weekly
-  - **Cursor**：Plan / Auto / API，并显示当前账期 token 总数
+  - **Cursor**：Plan / Auto / API，并区分当前账期 Cursor / 其他模型 token
   - **Claude**：Session（5h）/ Weekly（7d）
   - **Skywork**：可花积分（会员月度 10000 + 额外充值，叠加显示；登录赠礼计入总额）
 - 每 **5 分钟**自动刷新；失败时**保留上次成功数据**

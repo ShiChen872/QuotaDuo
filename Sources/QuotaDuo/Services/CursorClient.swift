@@ -688,23 +688,53 @@ private extension CursorClient {
 
     struct TokenTotals: Sendable {
         let total: Double
+        let cursor: Double
+        let other: Double
 
         init?(decoding data: Data) {
-            guard let totals = try? JSONDecoder().decode(AggregatedUsage.self, from: data) else {
+            guard let payload = try? JSONDecoder().decode(AggregatedUsage.self, from: data) else {
                 return nil
             }
-            let total = (totals.totalInputTokens ?? 0)
-                + (totals.totalOutputTokens ?? 0)
-                + (totals.totalCacheWriteTokens ?? 0)
-                + (totals.totalCacheReadTokens ?? 0)
+            let headline = (payload.totalInputTokens ?? 0)
+                + (payload.totalOutputTokens ?? 0)
+                + (payload.totalCacheWriteTokens ?? 0)
+                + (payload.totalCacheReadTokens ?? 0)
+            var cursor = 0.0
+            var other = 0.0
+            for row in payload.aggregations ?? [] {
+                let amount = row.tokenCount
+                if Self.isCursorModel(row) {
+                    cursor += amount
+                } else {
+                    other += amount
+                }
+            }
+            let total = headline > 0 ? headline : cursor + other
             guard total > 0 else { return nil }
             self.total = total
+            self.cursor = cursor
+            self.other = other
         }
 
-        /// Billing page total: input + output + cache write + cache read.
+        /// Billing page: Cursor models (Grok / Composer) vs third-party models.
         func detailLine() -> String? {
             guard total > 0 else { return nil }
-            return "Token \(CursorClient.formatTokenCount(total))"
+            let totalText = "Token \(CursorClient.formatTokenCount(total))"
+            var parts: [String] = []
+            if cursor > 0 { parts.append("Cursor \(CursorClient.formatTokenCount(cursor))") }
+            if other > 0 { parts.append("其他 \(CursorClient.formatTokenCount(other))") }
+            guard !parts.isEmpty else { return totalText }
+            return "\(totalText)（\(parts.joined(separator: " · "))）"
+        }
+
+        /// Grok and Composer draw from the Cursor pool. Tier 2 matches that pool
+        /// when a new first-party name does not contain those words.
+        private static func isCursorModel(_ row: ModelAggregation) -> Bool {
+            let name = row.modelIntent?.lowercased() ?? ""
+            if name.contains("grok") || name.contains("composer") || name.hasPrefix("cursor-") {
+                return true
+            }
+            return row.tier == 2
         }
     }
 
@@ -713,38 +743,73 @@ private extension CursorClient {
         let totalOutputTokens: Double?
         let totalCacheWriteTokens: Double?
         let totalCacheReadTokens: Double?
+        let aggregations: [ModelAggregation]?
 
         enum CodingKeys: String, CodingKey {
             case totalInputTokens
             case totalOutputTokens
             case totalCacheWriteTokens
             case totalCacheReadTokens
+            case aggregations
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            totalInputTokens = Self.decodeCount(container, .totalInputTokens)
-            totalOutputTokens = Self.decodeCount(container, .totalOutputTokens)
-            totalCacheWriteTokens = Self.decodeCount(container, .totalCacheWriteTokens)
-            totalCacheReadTokens = Self.decodeCount(container, .totalCacheReadTokens)
-        }
-
-        private static func decodeCount(
-            _ container: KeyedDecodingContainer<CodingKeys>,
-            _ key: CodingKeys
-        ) -> Double? {
-            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
-                return value
-            }
-            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
-                return Double(value)
-            }
-            if let raw = try? container.decodeIfPresent(String.self, forKey: key) {
-                return Double(raw.replacingOccurrences(of: ",", with: ""))
-            }
-            return nil
+            totalInputTokens = decodeFlexibleCount(container, .totalInputTokens)
+            totalOutputTokens = decodeFlexibleCount(container, .totalOutputTokens)
+            totalCacheWriteTokens = decodeFlexibleCount(container, .totalCacheWriteTokens)
+            totalCacheReadTokens = decodeFlexibleCount(container, .totalCacheReadTokens)
+            aggregations = try container.decodeIfPresent([ModelAggregation].self, forKey: .aggregations)
         }
     }
+
+    struct ModelAggregation: Decodable {
+        let modelIntent: String?
+        let tier: Int?
+        let inputTokens: Double?
+        let outputTokens: Double?
+        let cacheWriteTokens: Double?
+        let cacheReadTokens: Double?
+
+        var tokenCount: Double {
+            (inputTokens ?? 0) + (outputTokens ?? 0) + (cacheWriteTokens ?? 0) + (cacheReadTokens ?? 0)
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case modelIntent
+            case tier
+            case inputTokens
+            case outputTokens
+            case cacheWriteTokens
+            case cacheReadTokens
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            modelIntent = try container.decodeIfPresent(String.self, forKey: .modelIntent)
+            tier = try container.decodeIfPresent(Int.self, forKey: .tier)
+            inputTokens = decodeFlexibleCount(container, .inputTokens)
+            outputTokens = decodeFlexibleCount(container, .outputTokens)
+            cacheWriteTokens = decodeFlexibleCount(container, .cacheWriteTokens)
+            cacheReadTokens = decodeFlexibleCount(container, .cacheReadTokens)
+        }
+    }
+}
+
+private func decodeFlexibleCount<Key: CodingKey>(
+    _ container: KeyedDecodingContainer<Key>,
+    _ key: Key
+) -> Double? {
+    if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+        return value
+    }
+    if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+        return Double(value)
+    }
+    if let raw = try? container.decodeIfPresent(String.self, forKey: key) {
+        return Double(raw.replacingOccurrences(of: ",", with: ""))
+    }
+    return nil
 }
 
 private func parseISO8601(_ value: String) -> Date? {
