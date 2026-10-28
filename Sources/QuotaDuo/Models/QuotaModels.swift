@@ -5,6 +5,7 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
     case cursor
     case claude
     case skywork
+    case agy
 
     var id: String { rawValue }
 
@@ -14,16 +15,18 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
         case .cursor: return "Cursor"
         case .claude: return "Claude"
         case .skywork: return "Skywork"
+        case .agy: return "AGY"
         }
     }
 
-    /// Compact prefix for the menu bar (C / X / A / S).
+    /// Compact prefix for the menu bar (C / X / A / S / G).
     var menuBarPrefix: String {
         switch self {
         case .codex: return "C"
         case .cursor: return "X"
         case .claude: return "A"
         case .skywork: return "S"
+        case .agy: return "G"
         }
     }
 
@@ -34,6 +37,7 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
         case .cursor: return ["Plan"]
         case .claude: return ["Session", "Weekly"]
         case .skywork: return ["会员", "充值"]
+        case .agy: return []
         }
     }
 }
@@ -61,6 +65,8 @@ struct ProviderUsage: Identifiable, Sendable, Equatable {
     /// When set, menu bar uses this instead of the lowest primary line.
     /// Skywork menu bar is the spendable total capped at the 10,000 membership face value.
     let menuBarRemainingPercent: Double?
+    /// Whether this provider should contribute a compact badge to the top menu bar.
+    let includeInMenuBar: Bool
 
     init(
         providerId: ProviderID,
@@ -68,7 +74,8 @@ struct ProviderUsage: Identifiable, Sendable, Equatable {
         lines: [UsageLine],
         fetchedAt: Date,
         detail: String?,
-        menuBarRemainingPercent: Double? = nil
+        menuBarRemainingPercent: Double? = nil,
+        includeInMenuBar: Bool = true
     ) {
         self.providerId = providerId
         self.plan = plan
@@ -76,10 +83,12 @@ struct ProviderUsage: Identifiable, Sendable, Equatable {
         self.fetchedAt = fetchedAt
         self.detail = detail
         self.menuBarRemainingPercent = menuBarRemainingPercent
+        self.includeInMenuBar = includeInMenuBar
     }
 
     /// Lowest remaining among primary lines; falls back to all lines.
     var primaryRemainingPercent: Double? {
+        guard includeInMenuBar else { return nil }
         if let menuBarRemainingPercent {
             return menuBarRemainingPercent.clampedPercent
         }
@@ -119,6 +128,7 @@ enum AuthErrorDetector {
         if let error = error as? CursorError, case .authUnavailable = error { return true }
         if let error = error as? ClaudeError, case .authUnavailable = error { return true }
         if let error = error as? SkyworkError, case .authUnavailable = error { return true }
+        if let error = error as? AGYError, case .authUnavailable = error { return true }
         return false
     }
 }

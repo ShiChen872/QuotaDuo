@@ -83,6 +83,9 @@ enum SmokeTest {
             await probe(name: "Skywork", configured: SkyworkClient().isConfigured()) {
                 try await SkyworkClient().fetch()
             }
+            await probe(name: "AGY", configured: AGYClient().isConfigured()) {
+                try await AGYClient().fetch()
+            }
         }
         _ = semaphore.wait(timeout: .now() + 45)
     }

@@ -1,6 +1,6 @@
 # QuotaDuo
 
-本地 macOS 菜单栏应用，按本机登录态可视化 **Codex**、**Cursor**、**Claude Code**、**Skywork** 剩余用量。
+本地 macOS 菜单栏应用，按本机登录态可视化 **Codex**、**Cursor**、**Claude Code**、**Skywork**、**AGY (Antigravity)** 剩余用量与本地 Token 统计。
 
 未登录的服务**不占面板空间**——你只有 Codex + Cursor 时就显示两个；哪天登录了 Claude Code 或 Skywork，刷新后自动多一张卡。
 
@@ -12,6 +12,7 @@
   - **Cursor**：Plan / Auto / API，并区分当前账期 Cursor / 其他模型 token
   - **Claude**：Session（5h）/ Weekly（7d）
   - **Skywork**：可花积分。点击刷新读一次会员 / 充值 / 登录和真实到期；自动刷新只更新合计。专业积分不计入
+  - **AGY**：纯本地解析 `~/.gemini` 会话日志（零网络请求、不碰 OAuth），展示今日/账期 Token 总数、Gemini vs Claude 模型分池及账期倒计时环（顶部菜单栏保持精简不加 `Gxx`）
 - 每 **5 分钟**自动刷新；失败时**保留上次成功数据**
 - 「登录时启动」（需安装到 `~/Applications`）
 

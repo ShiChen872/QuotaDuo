@@ -19,6 +19,7 @@ final class QuotaStore {
     private let cursorClient = CursorClient()
     private let claudeClient = ClaudeClient()
     private let skyworkClient = SkyworkClient()
+    private let agyClient = AGYClient()
     private var refreshTask: Task<Void, Never>?
     private let refreshInterval: TimeInterval = 5 * 60
 
@@ -109,6 +110,8 @@ final class QuotaStore {
                             result = .success(try await self.claudeClient.fetch())
                         case .skywork:
                             result = .success(try await self.skyworkClient.fetch(includeDetail: manual))
+                        case .agy:
+                            result = .success(try await self.agyClient.fetch())
                         }
                     } catch {
                         result = .failure(error)
@@ -134,6 +137,7 @@ final class QuotaStore {
         case .cursor: return cursorClient.isConfigured()
         case .claude: return claudeClient.isConfigured()
         case .skywork: return skyworkClient.isConfigured()
+        case .agy: return agyClient.isConfigured()
         }
     }
 

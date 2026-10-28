@@ -57,7 +57,7 @@ struct QuotaPanelView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("未检测到已登录的服务")
                 .font(.subheadline.weight(.medium))
-            Text("请先登录 Codex、Cursor、Claude Code，或在 Chrome 登录 Skywork，然后点刷新。")
+            Text("请先登录 Codex、Cursor、Claude Code、AGY，或在 Chrome 登录 Skywork，然后点刷新。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -188,28 +188,30 @@ private struct ProviderCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(usage.lines) { line in
-                        VStack(spacing: 6) {
-                            QuotaRing(remainingPercent: line.remainingPercent, size: 58, lineWidth: 6)
-                            Text(line.label)
-                                .font(.caption2.weight(.medium))
-                            if let subtitle = line.subtitle {
-                                Text(subtitle)
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            if let resetsAt = line.resetsAt {
-                                TimelineView(.periodic(from: .now, by: 30)) { context in
-                                    Text(Formatters.resetDescription(resetsAt, now: context.date))
+                if !usage.lines.isEmpty {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(usage.lines) { line in
+                            VStack(spacing: 6) {
+                                QuotaRing(remainingPercent: line.remainingPercent, size: 58, lineWidth: 6)
+                                Text(line.label)
+                                    .font(.caption2.weight(.medium))
+                                if let subtitle = line.subtitle {
+                                    Text(subtitle)
                                         .font(.system(size: 9))
                                         .foregroundStyle(.secondary)
-                                        .multilineTextAlignment(.center)
+                                        .lineLimit(1)
+                                }
+                                if let resetsAt = line.resetsAt {
+                                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                                        Text(Formatters.resetDescription(resetsAt, now: context.date))
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.center)
+                                    }
                                 }
                             }
+                            .frame(maxWidth: .infinity)
                         }
-                        .frame(maxWidth: .infinity)
                     }
                 }
             }
