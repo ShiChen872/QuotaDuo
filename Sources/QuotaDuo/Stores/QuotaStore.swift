@@ -55,11 +55,11 @@ final class QuotaStore {
     func start() {
         guard refreshTask == nil else { return }
         refreshTask = Task { [weak self] in
-            await self?.refresh()
+            await self?.refresh(manual: false)
             while let self, !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(self.refreshInterval))
                 guard !Task.isCancelled else { break }
-                await self.refresh()
+                await self.refresh(manual: false)
             }
         }
     }
@@ -69,7 +69,8 @@ final class QuotaStore {
         refreshTask = nil
     }
 
-    func refresh() async {
+    /// `manual` is the panel refresh button. Only that path may call Skywork detail once.
+    func refresh(manual: Bool = false) async {
         isRefreshing = true
         defer { isRefreshing = false }
 
@@ -107,7 +108,7 @@ final class QuotaStore {
                         case .claude:
                             result = .success(try await self.claudeClient.fetch())
                         case .skywork:
-                            result = .success(try await self.skyworkClient.fetch())
+                            result = .success(try await self.skyworkClient.fetch(includeDetail: manual))
                         }
                     } catch {
                         result = .failure(error)

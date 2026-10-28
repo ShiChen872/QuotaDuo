@@ -38,7 +38,7 @@ struct QuotaPanelView: View {
                 .font(.headline)
             Spacer()
             Button {
-                Task { await store.refresh() }
+                Task { await store.refresh(manual: true) }
             } label: {
                 if store.isRefreshing {
                     ProgressView()

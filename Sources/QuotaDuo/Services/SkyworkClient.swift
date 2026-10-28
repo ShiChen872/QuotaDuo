@@ -6,10 +6,12 @@ import SQLite3
 
 struct SkyworkClient: Sendable {
     private let benefitsURL = URL(string: "https://api.skywork.ai/marketing/mark/get_user_benefits")!
+    private let detailURL = URL(string: "https://api.skywork.ai/marketing/mark/detail")!
     private let clientKeysURL = URL(string: "https://static-s3.skyworkcdn.com/fe/skywork-client-config/client-keys.js")!
     /// Public browser HMAC secret shipped in client-keys.js (not a user credential).
     private let fallbackAuthorizeSecret = "2DCKzOel4s0ismPf2d4nAQkwp9Tmh3mKhMt5QuG6qUc="
     private let monthlyQuota: Double = 10_000
+    private static let detailSplitSource = "detail"
     private let maximumPayloadSize = 1_048_576
 
     func isConfigured() -> Bool {
@@ -25,23 +27,52 @@ struct SkyworkClient: Sendable {
         return chromeHasTokenCookie()
     }
 
-    func fetch() async throws -> ProviderUsage {
+    /// Automatic refresh passes `includeDetail: false` and only reads the safe
+    /// benefits total. The panel's refresh button passes `true` and reads
+    /// `/marketing/mark/detail` once. That endpoint can return 630120 and kick
+    /// the Chrome login, so a failure is not retried and is not treated as a
+    /// dead session.
+    func fetch(includeDetail: Bool = false) async throws -> ProviderUsage {
         let first = try loadSession(forceChrome: false)
         do {
-            return try await fetchWithSession(first)
+            return try await fetchWithSession(first, includeDetail: includeDetail)
         } catch let error as SkyworkError where error.isAuthFailure && first.canRefreshFromChrome {
             Self.state.clearSession()
             try? FileManager.default.removeItem(at: Self.sessionFileURL())
-            return try await fetchWithSession(try loadSession(forceChrome: true))
+            return try await fetchWithSession(try loadSession(forceChrome: true), includeDetail: includeDetail)
         }
     }
 
-    private func fetchWithSession(_ session: SkyworkSession) async throws -> ProviderUsage {
+    static func detailRequestCount() -> Int {
+        state.detailRequestCount()
+    }
+
+    private func fetchWithSession(_ session: SkyworkSession, includeDetail: Bool) async throws -> ProviderUsage {
         let secret = await loadAuthorizeSecret()
         let now = Date.now
+        let benefits = try await loadBenefits(session: session, secret: secret)
+        let plan = benefits.plan
+        let total = benefits.total
 
-        // get_user_benefits is the safe source. /marketing/mark/detail returns
-        // 630120 on extra device sessions and can kick the browser login.
+        if includeDetail {
+            switch await readDetailOnce(session: session, secret: secret, total: total) {
+            case .ready(let snapshot):
+                persistSession(session, snapshot: snapshot)
+                return makeUsage(total: total, plan: plan, now: now, split: snapshot, note: nil)
+            case .deviceLimit:
+                return makeUsage(total: total, plan: plan, now: now, split: nil, note: "设备数限制，未读取分桶")
+            case .unavailable:
+                return makeUsage(total: total, plan: plan, now: now, split: nil, note: "未读取分桶")
+            }
+        }
+
+        if let snapshot = loadDetailSnapshot(), abs(snapshot.total - total) <= 1 {
+            return makeUsage(total: total, plan: plan, now: now, split: snapshot, note: nil)
+        }
+        return makeUsage(total: total, plan: plan, now: now, split: nil, note: "分桶需点一次刷新")
+    }
+
+    private func loadBenefits(session: SkyworkSession, secret: String) async throws -> (plan: String, total: Double) {
         let benefitsData = try await request(
             benefitsURL,
             method: "POST",
@@ -56,177 +87,126 @@ struct SkyworkClient: Sendable {
         guard envelope.code == 0, let data = envelope.data, let remaining = data.markBalance else {
             throw SkyworkError.malformedUsage
         }
-
-        let daily = data.dailyLoginBalance ?? 0
-        let buckets = Self.allocate(
-            total: remaining,
-            daily: daily,
-            now: now,
-            previous: loadPersistedBuckets(),
-            monthlyQuota: monthlyQuota
-        )
-        persistSession(session, credits: buckets)
-
         let plan = data.membershipTitle.flatMap { $0.isEmpty ? nil : $0 } ?? "Basic"
-        let stackedPercent = min(100, buckets.total / monthlyQuota * 100)
-        let parts = [
-            ("会员", buckets.monthly),
-            ("充值", buckets.recharge),
-            ("存留", buckets.leftover),
-            ("登录", buckets.daily)
-        ].filter { $0.1 > 0.5 }.map { "\($0.0) \(formatCredits($0.1))" }
+        return (plan, remaining)
+    }
 
-        var lines = [
-            UsageLine(
-                label: "月度",
-                usedPercent: (max(0, monthlyQuota - buckets.monthly) / monthlyQuota * 100).clampedPercent,
-                resetsAt: buckets.cycleResetsAt,
-                subtitle: "\(formatCredits(buckets.monthly)) / \(formatCredits(monthlyQuota))"
+    private func readDetailOnce(
+        session: SkyworkSession,
+        secret: String,
+        total: Double
+    ) async -> DetailRead {
+        Self.state.bumpDetailRequest()
+        do {
+            let data = try await request(
+                detailURL,
+                method: "POST",
+                session: session,
+                secret: secret,
+                body: Data("{}".utf8)
             )
-        ]
-        if buckets.recharge > 0.5 {
-            lines.append(
-                UsageLine(
-                    label: "充值",
-                    usedPercent: (max(0, monthlyQuota - buckets.recharge) / monthlyQuota * 100).clampedPercent,
-                    resetsAt: buckets.rechargeExpiresAt,
-                    subtitle: formatCredits(buckets.recharge)
-                )
-            )
+            let envelope = try JSONDecoder().decode(DetailEnvelope.self, from: data)
+            if envelope.code == 630120 {
+                return .deviceLimit
+            }
+            guard envelope.code == 0, let payload = envelope.data else {
+                return .unavailable
+            }
+            let snapshot = Self.snapshot(from: payload, total: total)
+            if snapshot.partSum <= 0.5 && total > 0.5 {
+                return .unavailable
+            }
+            return .ready(snapshot)
+        } catch {
+            return .unavailable
         }
+    }
 
+    private func makeUsage(
+        total: Double,
+        plan: String,
+        now: Date,
+        split: DetailSnapshot?,
+        note: String?
+    ) -> ProviderUsage {
+        let menuBar = min(100, total / monthlyQuota * 100)
+        let detail: String
+        let lines: [UsageLine]
+        if let split {
+            let parts = [
+                creditPart("登录", split.daily, expiry: split.dailyExpiresAt),
+                creditPart("充值", split.recharge),
+                creditPart("会员", split.member),
+                creditPart("活动", split.event),
+                creditPart("免费", split.fresh),
+                creditPart("会员活动", split.memberActivity)
+            ].compactMap { $0 }
+            detail = parts.isEmpty
+                ? "剩余 \(formatCredits(total))"
+                : "剩余 \(formatCredits(total))（\(parts.joined(separator: " · "))）"
+            lines = splitLines(split)
+        } else {
+            let suffix = note.map { "（\($0)）" } ?? ""
+            detail = "剩余 \(formatCredits(total))\(suffix)"
+            let capped = min(total, monthlyQuota)
+            lines = [
+                UsageLine(
+                    label: "合计",
+                    usedPercent: (max(0, monthlyQuota - capped) / monthlyQuota * 100).clampedPercent,
+                    resetsAt: nil,
+                    subtitle: formatCredits(total)
+                )
+            ]
+        }
         return ProviderUsage(
             providerId: .skywork,
             plan: plan,
             lines: lines,
             fetchedAt: now,
-            detail: parts.isEmpty
-                ? "剩余 \(formatCredits(buckets.total)) / \(formatCredits(monthlyQuota))"
-                : "剩余 \(formatCredits(buckets.total))（\(parts.joined(separator: " · "))）",
-            menuBarRemainingPercent: stackedPercent
+            detail: detail,
+            menuBarRemainingPercent: menuBar
         )
+    }
+
+    private func splitLines(_ split: DetailSnapshot) -> [UsageLine] {
+        let memberAmount = split.member > monthlyQuota + 0.5
+            ? formatCredits(split.member)
+            : "\(formatCredits(split.member)) / \(formatCredits(monthlyQuota))"
+        let memberSubtitle = split.memberExpiresAt.map { "\(memberAmount) · \(formatExpiry($0))" } ?? memberAmount
+        let memberUsed = split.member > monthlyQuota
+            ? 0
+            : (max(0, monthlyQuota - split.member) / monthlyQuota * 100).clampedPercent
+        var lines = [
+            UsageLine(
+                label: "会员",
+                usedPercent: memberUsed,
+                resetsAt: split.memberExpiresAt,
+                subtitle: memberSubtitle
+            )
+        ]
+        if split.recharge > 0.5 {
+            lines.append(
+                UsageLine(
+                    label: "充值",
+                    usedPercent: 0,
+                    resetsAt: split.rechargeExpiresAt,
+                    subtitle: formatCredits(split.recharge)
+                )
+            )
+        }
+        return lines
+    }
+
+    private func creditPart(_ name: String, _ value: Double, expiry: Date? = nil) -> String? {
+        guard value > 0.5 else { return nil }
+        if let expiry {
+            return "\(name) \(formatCredits(value)) 至 \(formatExpiry(expiry))"
+        }
+        return "\(name) \(formatCredits(value))"
     }
 
     private static func isAuthCode(_ code: Int) -> Bool {
         code == 401 || code == 403 || code == 630120
-    }
-
-    /// Split spendable credits into monthly membership + extra recharge.
-    /// Benefits only returns a combined `mark_balance`; we keep a local ledger
-    /// so a ~10,000 grant on the 14th is monthly, and other increases are 充值.
-    private static func allocate(
-        total: Double,
-        daily: Double,
-        now: Date,
-        previous: SkyworkBuckets?,
-        monthlyQuota: Double
-    ) -> SkyworkBuckets {
-        let other = max(0, total - daily)
-        let cycleResetsAt = nextMonthlyReset(from: now)
-
-        guard let previous else {
-            return initialAllocate(other: other, daily: daily, now: now, cycleResetsAt: cycleResetsAt, monthlyQuota: monthlyQuota)
-        }
-
-        var monthly = previous.monthly
-        var recharge = previous.recharge
-        var leftover = previous.leftover
-        var rechargeExpiresAt = previous.rechargeExpiresAt
-
-        if now >= previous.cycleResetsAt {
-            monthly = 0
-        }
-
-        let previousOther = monthly + recharge + leftover
-        let delta = other - previousOther
-
-        if delta < -0.5 {
-            var spend = -delta
-            let fromMonthly = min(monthly, spend)
-            monthly -= fromMonthly
-            spend -= fromMonthly
-            let fromLeftover = min(leftover, spend)
-            leftover -= fromLeftover
-            spend -= fromLeftover
-            recharge = max(0, recharge - spend)
-        } else if delta > 0.5 {
-            if abs(delta - monthlyQuota) < 500 {
-                monthly = min(monthlyQuota, monthly + delta)
-                if monthly > monthlyQuota {
-                    recharge += monthly - monthlyQuota
-                    monthly = monthlyQuota
-                }
-            } else {
-                recharge += delta
-                if rechargeExpiresAt == nil || rechargeExpiresAt! < now {
-                    rechargeExpiresAt = now.addingTimeInterval(Self.rechargeValidity)
-                }
-            }
-        }
-
-        let sum = monthly + recharge + leftover
-        if abs(sum - other) > 1 {
-            if sum <= 0 {
-                recharge = other
-                monthly = 0
-                leftover = 0
-            } else {
-                let scale = other / sum
-                monthly *= scale
-                recharge *= scale
-                leftover *= scale
-            }
-        }
-
-        return SkyworkBuckets(
-            monthly: monthly,
-            recharge: recharge,
-            leftover: leftover,
-            daily: daily,
-            rechargeExpiresAt: rechargeExpiresAt,
-            cycleResetsAt: cycleResetsAt
-        )
-    }
-
-    private static let rechargeValidity: TimeInterval = 90 * 24 * 60 * 60
-
-    private static func initialAllocate(
-        other: Double,
-        daily: Double,
-        now: Date,
-        cycleResetsAt: Date,
-        monthlyQuota: Double
-    ) -> SkyworkBuckets {
-        if other > monthlyQuota + 0.5 {
-            return SkyworkBuckets(
-                monthly: monthlyQuota,
-                recharge: other - monthlyQuota,
-                leftover: 0,
-                daily: daily,
-                rechargeExpiresAt: now.addingTimeInterval(rechargeValidity),
-                cycleResetsAt: cycleResetsAt
-            )
-        }
-        // Fresh monthly grant is close to 10,000. A mid-cycle leftover that is
-        // clearly below that is treated as extra 充值 (monthly already spent).
-        if other >= monthlyQuota * 0.95 {
-            return SkyworkBuckets(
-                monthly: other,
-                recharge: 0,
-                leftover: 0,
-                daily: daily,
-                rechargeExpiresAt: nil,
-                cycleResetsAt: cycleResetsAt
-            )
-        }
-        return SkyworkBuckets(
-            monthly: 0,
-            recharge: other,
-            leftover: 0,
-            daily: daily,
-            rechargeExpiresAt: now.addingTimeInterval(rechargeValidity),
-            cycleResetsAt: cycleResetsAt
-        )
     }
 
     private func formatCredits(_ value: Double) -> String {
@@ -238,19 +218,44 @@ struct SkyworkClient: Sendable {
         return formatter.string(from: NSNumber(value: rounded)) ?? "\(Int(rounded))"
     }
 
-    static func nextMonthlyReset(from now: Date) -> Date {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        var components = calendar.dateComponents([.year, .month], from: now)
-        components.day = 14
-        components.hour = 0
-        components.minute = 0
-        components.second = 0
-        guard let thisMonth = calendar.date(from: components) else { return now }
-        if thisMonth > now {
-            return thisMonth
+    private func formatExpiry(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = "M/d HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private static func snapshot(from payload: DetailData, total: Double) -> DetailSnapshot {
+        DetailSnapshot(
+            total: total,
+            daily: balance(of: payload.dailyCredits),
+            dailyExpiresAt: earliestExpiry(in: payload.dailyCredits),
+            recharge: balance(of: payload.payCredits),
+            rechargeExpiresAt: earliestExpiry(in: payload.payCredits),
+            member: balance(of: payload.memberCredits),
+            memberExpiresAt: earliestExpiry(in: payload.memberCredits),
+            event: balance(of: payload.eventCredits),
+            fresh: balance(of: payload.freshCredits),
+            memberActivity: balance(of: payload.memberActivityCredits)
+        )
+    }
+
+    private static func balance(of bucket: CreditBucket?) -> Double {
+        max(0, bucket?.creditsBalance ?? 0)
+    }
+
+    /// Soonest expiry among packages that still have a balance.
+    private static func earliestExpiry(in bucket: CreditBucket?) -> Date? {
+        let packages = bucket?.detail ?? []
+        let funded = packages.filter { ($0.creditsBalance ?? 0) > 0.5 }
+        let pool = funded.isEmpty ? packages : funded
+        let dates = pool.compactMap { package -> Date? in
+            guard let raw = package.expireAt, raw > 0 else { return nil }
+            let seconds = raw > 10_000_000_000 ? raw / 1_000 : raw
+            return Date(timeIntervalSince1970: seconds)
         }
-        return calendar.date(byAdding: .month, value: 1, to: thisMonth) ?? thisMonth
+        return dates.min()
     }
 
     private func loadSession(forceChrome: Bool) throws -> SkyworkSession {
@@ -292,7 +297,7 @@ struct SkyworkClient: Sendable {
                 canRefreshFromChrome: true
             )
         )
-        persistSession(session, credits: nil)
+        persistSession(session)
         return session
     }
 
@@ -314,43 +319,56 @@ struct SkyworkClient: Sendable {
         )
     }
 
-    private func persistSession(_ session: SkyworkSession, credits: SkyworkBuckets?) {
+    private func persistSession(_ session: SkyworkSession, snapshot: DetailSnapshot? = nil) {
         let url = Self.sessionFileURL()
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let existing = try? JSONDecoder().decode(PersistedSession.self, from: Data(contentsOf: url))
         let stored = PersistedSession(
             cookieHeader: session.cookieHeader,
             deviceHash: session.deviceHash,
-            monthlyRemaining: credits?.monthly ?? existing?.monthlyRemaining,
-            rechargeRemaining: credits?.recharge ?? existing?.rechargeRemaining,
-            leftoverRemaining: credits?.leftover ?? existing?.leftoverRemaining,
-            rechargeExpiresAt: credits?.rechargeExpiresAt?.timeIntervalSince1970 ?? existing?.rechargeExpiresAt,
-            cycleResetsAt: credits?.cycleResetsAt.timeIntervalSince1970 ?? existing?.cycleResetsAt
+            monthlyRemaining: snapshot?.member ?? existing?.monthlyRemaining,
+            rechargeRemaining: snapshot?.recharge ?? existing?.rechargeRemaining,
+            leftoverRemaining: snapshot == nil ? existing?.leftoverRemaining : 0,
+            rechargeExpiresAt: snapshot == nil
+                ? existing?.rechargeExpiresAt
+                : snapshot?.rechargeExpiresAt?.timeIntervalSince1970,
+            cycleResetsAt: snapshot == nil
+                ? existing?.cycleResetsAt
+                : snapshot?.memberExpiresAt?.timeIntervalSince1970,
+            splitSource: snapshot == nil ? existing?.splitSource : Self.detailSplitSource,
+            splitTotal: snapshot?.total ?? existing?.splitTotal,
+            dailyRemaining: snapshot?.daily ?? existing?.dailyRemaining,
+            dailyExpiresAt: snapshot == nil
+                ? existing?.dailyExpiresAt
+                : snapshot?.dailyExpiresAt?.timeIntervalSince1970,
+            eventRemaining: snapshot?.event ?? existing?.eventRemaining,
+            freshRemaining: snapshot?.fresh ?? existing?.freshRemaining,
+            memberActivityRemaining: snapshot?.memberActivity ?? existing?.memberActivityRemaining
         )
         guard let data = try? JSONEncoder().encode(stored) else { return }
         try? data.write(to: url, options: [.atomic])
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    private func loadPersistedBuckets() -> SkyworkBuckets? {
+    /// Inferred ledgers written before `splitSource == detail` are not a real split.
+    private func loadDetailSnapshot() -> DetailSnapshot? {
         guard let stored = try? JSONDecoder().decode(
             PersistedSession.self,
             from: Data(contentsOf: Self.sessionFileURL())
-        ) else {
+        ), stored.splitSource == Self.detailSplitSource, let total = stored.splitTotal else {
             return nil
         }
-        guard stored.monthlyRemaining != nil || stored.rechargeRemaining != nil else {
-            return nil
-        }
-        let cycle = stored.cycleResetsAt.map { Date(timeIntervalSince1970: $0) }
-            ?? Self.nextMonthlyReset(from: .now)
-        return SkyworkBuckets(
-            monthly: stored.monthlyRemaining ?? 0,
+        return DetailSnapshot(
+            total: total,
+            daily: stored.dailyRemaining ?? 0,
+            dailyExpiresAt: stored.dailyExpiresAt.map { Date(timeIntervalSince1970: $0) },
             recharge: stored.rechargeRemaining ?? 0,
-            leftover: stored.leftoverRemaining ?? 0,
-            daily: 0,
             rechargeExpiresAt: stored.rechargeExpiresAt.map { Date(timeIntervalSince1970: $0) },
-            cycleResetsAt: cycle
+            member: stored.monthlyRemaining ?? 0,
+            memberExpiresAt: stored.cycleResetsAt.map { Date(timeIntervalSince1970: $0) },
+            event: stored.eventRemaining ?? 0,
+            fresh: stored.freshRemaining ?? 0,
+            memberActivity: stored.memberActivityRemaining ?? 0
         )
     }
 
@@ -601,7 +619,7 @@ struct SkyworkClient: Sendable {
         request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await ReachableHTTP.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let text = String(data: data, encoding: .utf8),
                   let secret = Self.parseAuthorizeSecret(text)
@@ -668,10 +686,7 @@ struct SkyworkClient: Sendable {
             request.httpBody = body
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.urlCache = nil
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await ReachableHTTP.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw SkyworkError.requestFailed("无响应")
         }
@@ -729,6 +744,7 @@ private extension SkyworkClient {
         private let lock = NSLock()
         private var cachedSession: SkyworkSession?
         private var cachedEncryptionKey: Data?
+        private var detailRequests = 0
 
         func session() -> SkyworkSession? {
             lock.lock()
@@ -759,6 +775,18 @@ private extension SkyworkClient {
             cachedEncryptionKey = encryptionKey
             lock.unlock()
         }
+
+        func bumpDetailRequest() {
+            lock.lock()
+            detailRequests += 1
+            lock.unlock()
+        }
+
+        func detailRequestCount() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return detailRequests
+        }
     }
 
     struct SkyworkSession: Sendable {
@@ -767,15 +795,27 @@ private extension SkyworkClient {
         let canRefreshFromChrome: Bool
     }
 
-    struct SkyworkBuckets: Sendable {
-        var monthly: Double
-        var recharge: Double
-        var leftover: Double
-        var daily: Double
-        var rechargeExpiresAt: Date?
-        var cycleResetsAt: Date
+    enum DetailRead {
+        case ready(DetailSnapshot)
+        case deviceLimit
+        case unavailable
+    }
 
-        var total: Double { monthly + recharge + leftover + daily }
+    struct DetailSnapshot: Sendable {
+        var total: Double
+        var daily: Double
+        var dailyExpiresAt: Date?
+        var recharge: Double
+        var rechargeExpiresAt: Date?
+        var member: Double
+        var memberExpiresAt: Date?
+        var event: Double
+        var fresh: Double
+        var memberActivity: Double
+
+        var partSum: Double {
+            daily + recharge + member + event + fresh + memberActivity
+        }
     }
 
     struct PersistedSession: Codable, Sendable {
@@ -786,6 +826,69 @@ private extension SkyworkClient {
         var leftoverRemaining: Double?
         var rechargeExpiresAt: TimeInterval?
         var cycleResetsAt: TimeInterval?
+        /// `"detail"` marks balances copied from `/marketing/mark/detail`. Older files are inferred and ignored.
+        var splitSource: String? = nil
+        var splitTotal: Double? = nil
+        var dailyRemaining: Double? = nil
+        var dailyExpiresAt: TimeInterval? = nil
+        var eventRemaining: Double? = nil
+        var freshRemaining: Double? = nil
+        var memberActivityRemaining: Double? = nil
+    }
+
+    struct DetailEnvelope: Decodable {
+        let code: Int
+        let data: DetailData?
+    }
+
+    struct DetailData: Decodable {
+        let dailyCredits: CreditBucket?
+        let freshCredits: CreditBucket?
+        let payCredits: CreditBucket?
+        let eventCredits: CreditBucket?
+        let memberCredits: CreditBucket?
+        let memberActivityCredits: CreditBucket?
+
+        enum CodingKeys: String, CodingKey {
+            case dailyCredits = "daily_credits"
+            case freshCredits = "fresh_credits"
+            case payCredits = "pay_credits"
+            case eventCredits = "event_credits"
+            case memberCredits = "member_credits"
+            case memberActivityCredits = "member_activity_credits"
+        }
+    }
+
+    struct CreditBucket: Decodable {
+        let creditsBalance: Double?
+        let detail: [CreditPackage]?
+
+        enum CodingKeys: String, CodingKey {
+            case creditsBalance = "credits_balance"
+            case detail
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            creditsBalance = container.decodeFlexibleDouble(forKey: .creditsBalance)
+            detail = try container.decodeIfPresent([CreditPackage].self, forKey: .detail)
+        }
+    }
+
+    struct CreditPackage: Decodable {
+        let creditsBalance: Double?
+        let expireAt: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case creditsBalance = "credits_balance"
+            case expireAt = "expire_at"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            creditsBalance = container.decodeFlexibleDouble(forKey: .creditsBalance)
+            expireAt = container.decodeFlexibleDouble(forKey: .expireAt)
+        }
     }
 
     struct BenefitsEnvelope: Decodable {

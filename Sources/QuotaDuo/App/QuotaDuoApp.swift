@@ -7,6 +7,10 @@ enum QuotaDuoMain {
             SmokeTest.run()
             return
         }
+        if CommandLine.arguments.contains("--skywork-detail-once") {
+            SkyworkDetailOnce.run()
+            return
+        }
 
         QuotaDuoApp.main()
     }
@@ -25,6 +29,37 @@ struct QuotaDuoApp: App {
                 }
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+enum SkyworkDetailOnce {
+    static func run() {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            defer { semaphore.signal() }
+            let sessionURL = SkyworkClient.sessionFileURL()
+            let existed = FileManager.default.fileExists(atPath: sessionURL.path)
+            do {
+                let usage = try await SkyworkClient().fetch(includeDetail: true)
+                print("detailRequests=\(SkyworkClient.detailRequestCount())")
+                print("sessionFileExisted=\(existed)")
+                print("sessionFileRemains=\(FileManager.default.fileExists(atPath: sessionURL.path))")
+                print("plan=\(usage.plan ?? "-")")
+                print("detail=\(usage.detail ?? "-")")
+                print("menu=\(usage.menuBarRemainingPercent.map { String(Int($0.rounded())) } ?? "-")")
+                for line in usage.lines {
+                    let reset = line.resetsAt.map { Formatters.resetDescription($0) } ?? "-"
+                    let subtitle = line.subtitle.map { " (\($0))" } ?? ""
+                    print("  - \(line.label)\(subtitle): remaining \(Int(line.remainingPercent.rounded()))% reset=\(reset)")
+                }
+            } catch {
+                print("detailRequests=\(SkyworkClient.detailRequestCount())")
+                print("sessionFileExisted=\(existed)")
+                print("sessionFileRemains=\(FileManager.default.fileExists(atPath: sessionURL.path))")
+                print("FAIL: \(error.localizedDescription)")
+            }
+        }
+        _ = semaphore.wait(timeout: .now() + 45)
     }
 }
 

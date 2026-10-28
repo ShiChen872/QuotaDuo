@@ -177,10 +177,7 @@ struct CodexClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.urlCache = nil
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await ReachableHTTP.data(for: request)
         guard data.count <= maximumPayloadSize else {
             throw CodexError.requestFailed("刷新响应过大")
         }
@@ -243,10 +240,7 @@ struct CodexClient: Sendable {
             request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.urlCache = nil
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await ReachableHTTP.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw CodexError.requestFailed("无响应")
         }

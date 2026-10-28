@@ -33,7 +33,7 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
         case .codex: return ["Session", "Weekly"]
         case .cursor: return ["Plan"]
         case .claude: return ["Session", "Weekly"]
-        case .skywork: return ["月度", "充值"]
+        case .skywork: return ["会员", "充值"]
         }
     }
 }
@@ -59,7 +59,7 @@ struct ProviderUsage: Identifiable, Sendable, Equatable {
     let fetchedAt: Date
     let detail: String?
     /// When set, menu bar uses this instead of the lowest primary line.
-    /// Skywork stacks monthly + recharge against the 10,000 monthly quota.
+    /// Skywork menu bar is the spendable total capped at the 10,000 membership face value.
     let menuBarRemainingPercent: Double?
 
     init(

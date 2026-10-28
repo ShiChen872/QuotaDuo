@@ -146,10 +146,7 @@ struct ClaudeClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.urlCache = nil
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await ReachableHTTP.data(for: request)
         guard data.count <= maximumPayloadSize else {
             throw ClaudeError.requestFailed(0)
         }
@@ -177,10 +174,7 @@ struct ClaudeClient: Sendable {
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("claude-code/2.1.170", forHTTPHeaderField: "User-Agent")
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.urlCache = nil
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await ReachableHTTP.data(for: request)
         guard data.count <= maximumPayloadSize else {
             throw ClaudeError.requestFailed(0)
         }

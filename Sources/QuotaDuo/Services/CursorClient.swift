@@ -498,10 +498,7 @@ struct CursorClient: Sendable {
             request.httpBody = body
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.urlCache = nil
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        let (data, response) = try await ReachableHTTP.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw CursorError.requestFailed("无响应")
         }
