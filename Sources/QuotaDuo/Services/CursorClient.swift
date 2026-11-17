@@ -95,14 +95,16 @@ struct CursorClient: Sendable {
                 ?? percent(used: plan.used, limit: limitCents)
 
             if let usedPct {
-                let usedCents = resolvedUsedCents(
+                let money: String?
+                if let split = bonusSplit(summaryPlan: plan, periodPlan: nil) {
+                    money = split.subtitle
+                    detail = split.detail
+                } else if let usedCents = resolvedUsedCents(
                     reportedUsed: plan.used,
                     remaining: plan.remaining,
                     limit: limitCents,
                     percentUsed: usedPct
-                )
-                let money: String?
-                if let usedCents, let limitCents {
+                ), let limitCents {
                     let text = "\(formatCents(usedCents)) / \(formatCents(limitCents))"
                     money = text
                     detail = "已用 \(text)"
@@ -172,6 +174,17 @@ struct CursorClient: Sendable {
                             subtitle: money
                         )
                     )
+                } else if let split = bonusSplit(summaryPlan: summary?.individualUsage?.plan, periodPlan: plan) {
+                    detail = split.detail
+                    if let idx = lines.firstIndex(where: { $0.label == "Plan" }) {
+                        let old = lines[idx]
+                        lines[idx] = UsageLine(
+                            label: old.label,
+                            usedPercent: old.usedPercent,
+                            resetsAt: old.resetsAt ?? resetAt,
+                            subtitle: split.subtitle
+                        )
+                    }
                 } else if let usedCents, let limitCents {
                     // Only adopt period spend when it roughly matches the ring percent.
                     let inferredPct = (usedCents / limitCents * 100).clampedPercent
@@ -294,6 +307,10 @@ struct CursorClient: Sendable {
         if let tokenLine = tokenTotals?.detailLine() {
             detail = detail.map { "\($0)\n\(tokenLine)" } ?? tokenLine
         }
+        if let resetAt {
+            let when = "\(Self.refreshStamp.string(from: resetAt)) 刷新"
+            detail = detail.map { "\($0)\n\(when)" } ?? when
+        }
 
         return ProviderUsage(
             providerId: .cursor,
@@ -349,6 +366,30 @@ struct CursorClient: Sendable {
         }
         return reportedUsed
     }
+
+    /// Included plan is full and Cursor is also spending bonus credit.
+    /// The ring percent is of that combined pool, so do not print bonus spend as `$147 / $20`.
+    private func bonusSplit(
+        summaryPlan: PlanBucket?,
+        periodPlan: PeriodPlanUsage?
+    ) -> (detail: String, subtitle: String)? {
+        let bonus = periodPlan?.bonusSpend ?? summaryPlan?.breakdownBonus
+        let included = periodPlan?.includedSpend ?? summaryPlan?.breakdownIncluded ?? summaryPlan?.used
+        let limit = periodPlan?.limit ?? summaryPlan?.limit
+        let total = periodPlan?.totalSpend ?? summaryPlan?.breakdownTotal
+        guard let bonus, bonus > 50, let included, let limit, limit > 0, let total, total > limit else {
+            return nil
+        }
+        let text = "合计 \(formatCents(total))（套餐 \(formatCents(min(included, limit)))/\(formatCents(limit)) · 赠送 \(formatCents(bonus))）"
+        return ("已用 \(text)", "合计 \(formatCents(total))")
+    }
+
+    private static let refreshStamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M/d HH:mm"
+        return formatter
+    }()
 
     /// API monetary fields are USD cents.
     private func formatCents(_ cents: Double) -> String {
@@ -587,6 +628,8 @@ private extension CursorClient {
         let apiPercentUsed: Double?
         let numRequests: Double?
         let billingCycleEnd: Date?
+        let breakdownIncluded: Double?
+        let breakdownBonus: Double?
         let breakdownTotal: Double?
 
         enum CodingKeys: String, CodingKey {
@@ -606,8 +649,9 @@ private extension CursorClient {
         }
 
         enum BreakdownKeys: String, CodingKey {
-            case total
             case included
+            case bonus
+            case total
         }
 
         init(from decoder: Decoder) throws {
@@ -624,8 +668,12 @@ private extension CursorClient {
             autoPercentUsed = try container.decodeIfPresent(Double.self, forKey: .autoPercentUsed)
             apiPercentUsed = try container.decodeIfPresent(Double.self, forKey: .apiPercentUsed)
             if let breakdown = try? container.nestedContainer(keyedBy: BreakdownKeys.self, forKey: .breakdown) {
+                breakdownIncluded = try breakdown.decodeIfPresent(Double.self, forKey: .included)
+                breakdownBonus = try breakdown.decodeIfPresent(Double.self, forKey: .bonus)
                 breakdownTotal = try breakdown.decodeIfPresent(Double.self, forKey: .total)
             } else {
+                breakdownIncluded = nil
+                breakdownBonus = nil
                 breakdownTotal = nil
             }
             if let seconds = try? container.decodeIfPresent(Double.self, forKey: .billingCycleEnd) {
@@ -676,6 +724,7 @@ private extension CursorClient {
         let planName: String?
         let totalSpend: Double?
         let includedSpend: Double?
+        let bonusSpend: Double?
         let limit: Double?
         let percentUsed: Double?
         let totalPercentUsed: Double?
