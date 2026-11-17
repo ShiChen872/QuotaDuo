@@ -27,6 +27,9 @@ struct AGYClient: Sendable {
         }
 
         let now = Date.now
+        if let official = officialUsage(now: now, plan: formatPlanBadge(model: readDefaultModel())) {
+            return official
+        }
         let cycle = billingWindow(for: now)
         let startOfToday = Calendar.current.startOfDay(for: now)
         let defaultModel = readDefaultModel()
@@ -75,6 +78,81 @@ struct AGYClient: Sendable {
             includeInMenuBar: false
         )
     }
+
+    // MARK: - Official snapshot written by the agy skill
+
+    private struct OfficialFile: Decodable {
+        var writtenAt: Date?
+        var groups: [OfficialGroup]
+    }
+
+    private struct OfficialGroup: Decodable {
+        var title: String
+        var models: String?
+        var windows: [OfficialWindow]
+    }
+
+    private struct OfficialWindow: Decodable {
+        var label: String
+        var remainingPercent: Double
+        var resetsAt: Date?
+    }
+
+    private func officialFileURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/quotaduo/agy.json")
+    }
+
+    private func officialUsage(now: Date, plan: String) -> ProviderUsage? {
+        guard let data = try? Data(contentsOf: officialFileURL()) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom(Self.decodeISO8601)
+        guard let file = try? decoder.decode(OfficialFile.self, from: data),
+              !file.groups.isEmpty else {
+            return nil
+        }
+        let lines = file.groups.flatMap { group in
+            group.windows.map { window in
+                UsageLine(
+                    label: window.label,
+                    usedPercent: (100 - window.remainingPercent).clampedPercent,
+                    resetsAt: window.resetsAt,
+                    subtitle: window.resetsAt == nil ? "可用" : nil,
+                    section: group.title,
+                    sectionNote: group.models
+                )
+            }
+        }
+        guard !lines.isEmpty else { return nil }
+        let stamp = file.writtenAt.map { Self.hourMinute.string(from: $0) } ?? "已写入"
+        return ProviderUsage(
+            providerId: .agy,
+            plan: plan,
+            lines: lines,
+            fetchedAt: file.writtenAt ?? now,
+            detail: "官方额度 · \(stamp)",
+            menuBarRemainingPercent: nil,
+            includeInMenuBar: false
+        )
+    }
+
+    private static func decodeISO8601(_ decoder: Decoder) throws -> Date {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withColonSeparatorInTimeZone]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: value) { return date }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "无法解析时间")
+    }
+
+    private static let hourMinute: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 
     // MARK: - Local Paths & Settings
 

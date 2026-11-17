@@ -5,11 +5,36 @@ struct QuotaPanelView: View {
     var store: QuotaStore
     @State private var launchAtLogin = LoginItemManager.isEnabled
     @State private var loginItemMessage: String?
+    @State private var cardsHeight: CGFloat = 0
+
+    private let maximumCardsHeight: CGFloat = 520
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
+            ScrollView {
+                cards
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: CardsHeightKey.self, value: proxy.size.height)
+                        }
+                    }
+            }
+            .frame(height: min(cardsHeight > 1 ? cardsHeight : 240, maximumCardsHeight))
+            .onPreferenceChange(CardsHeightKey.self) { cardsHeight = $0 }
+
+            footer
+        }
+        .padding(14)
+        .frame(width: 340)
+        .onAppear {
+            launchAtLogin = LoginItemManager.isEnabled
+        }
+    }
+
+    private var cards: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if store.visibleSlots.isEmpty {
                 emptyState
             } else {
@@ -21,14 +46,7 @@ struct QuotaPanelView: View {
                     )
                 }
             }
-
             settingsRow
-            footer
-        }
-        .padding(14)
-        .frame(width: 320)
-        .onAppear {
-            launchAtLogin = LoginItemManager.isEnabled
         }
     }
 
@@ -189,33 +207,97 @@ private struct ProviderCard: View {
                 }
 
                 if !usage.lines.isEmpty {
-                    HStack(alignment: .top, spacing: 14) {
-                        ForEach(usage.lines) { line in
-                            VStack(spacing: 6) {
-                                QuotaRing(remainingPercent: line.remainingPercent, size: 58, lineWidth: 6)
-                                Text(line.label)
-                                    .font(.caption2.weight(.medium))
-                                if let subtitle = line.subtitle {
-                                    Text(subtitle)
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                if let resetsAt = line.resetsAt {
-                                    TimelineView(.periodic(from: .now, by: 30)) { context in
-                                        Text(Formatters.resetDescription(resetsAt, now: context.date))
+                    if let sections = sectionGroups(usage.lines) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(sections) { section in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(section.title)
+                                        .font(.caption.weight(.semibold))
+                                    if let note = section.note {
+                                        Text(note)
                                             .font(.system(size: 9))
                                             .foregroundStyle(.secondary)
-                                            .multilineTextAlignment(.center)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    HStack(alignment: .top, spacing: 10) {
+                                        ForEach(section.lines) { line in
+                                            ringColumn(line, size: 46)
+                                        }
                                     }
                                 }
                             }
-                            .frame(maxWidth: .infinity)
+                        }
+                    } else {
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(usage.lines) { line in
+                                ringColumn(line, size: 58)
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    private struct SectionGroup: Identifiable {
+        let title: String
+        let note: String?
+        let lines: [UsageLine]
+        var id: String { title }
+    }
+
+    private func sectionGroups(_ lines: [UsageLine]) -> [SectionGroup]? {
+        guard lines.contains(where: { $0.section != nil }) else { return nil }
+        var order: [String] = []
+        var grouped: [String: [UsageLine]] = [:]
+        var notes: [String: String] = [:]
+        for line in lines {
+            let title = line.section ?? ""
+            if grouped[title] == nil { order.append(title) }
+            grouped[title, default: []].append(line)
+            if notes[title] == nil, let note = line.sectionNote, !note.isEmpty {
+                notes[title] = note
+            }
+        }
+        return order.map { SectionGroup(title: $0, note: notes[$0], lines: grouped[$0] ?? []) }
+    }
+
+    private func ringColumn(_ line: UsageLine, size: CGFloat) -> some View {
+        VStack(spacing: 6) {
+            QuotaRing(remainingPercent: line.remainingPercent, size: size, lineWidth: 6)
+            Text(line.label)
+                .font(.caption2.weight(.medium))
+            if let subtitle = line.subtitle {
+                Text(subtitle)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if let resetsAt = line.resetsAt {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(resetCaption(line, resetsAt: resetsAt, now: context.date))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func resetCaption(_ line: UsageLine, resetsAt: Date, now: Date) -> String {
+        if line.section != nil, resetsAt <= now {
+            return "再写入一次"
+        }
+        return Formatters.resetDescription(resetsAt, now: now)
+    }
+}
+
+private struct CardsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

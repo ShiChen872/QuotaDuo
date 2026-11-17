@@ -12,7 +12,7 @@
   - **Cursor**：Plan / Auto / API，并区分当前账期 Cursor / 其他模型 token
   - **Claude**：Session（5h）/ Weekly（7d）
   - **Skywork**：可花积分。点击刷新读一次会员 / 充值 / 登录和真实到期；自动刷新只更新合计。专业积分不计入
-  - **AGY**：纯本地解析 `~/.gemini` 会话日志（零网络请求、不碰 OAuth），展示今日/账期 Token 总数、Gemini vs Claude 模型分池及账期倒计时环（顶部菜单栏保持精简不加 `Gxx`）
+  - **AGY**：平时只读本地 Token。在已登录的 agy 会话里说「写入 QuotaDuo 额度」后，刷新会改画官方三组剩余。App 不启动 `agy`，菜单栏不加 `Gxx`
 - 每 **5 分钟**自动刷新；失败时**保留上次成功数据**
 - 「登录时启动」（需安装到 `~/Applications`）
 

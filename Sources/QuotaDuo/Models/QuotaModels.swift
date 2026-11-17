@@ -43,12 +43,32 @@ enum ProviderID: String, Sendable, CaseIterable, Identifiable {
 }
 
 struct UsageLine: Identifiable, Sendable, Equatable {
-    var id: String { label }
+    var id: String { section.map { "\($0)|\(label)" } ?? label }
+    /// Groups rings into stacked rows. Nil keeps the single row used by other providers.
+    let section: String?
+    /// Small print under the section title, such as model names.
+    let sectionNote: String?
     let label: String
     /// Used percentage in 0...100
     let usedPercent: Double
     let resetsAt: Date?
     let subtitle: String?
+
+    init(
+        label: String,
+        usedPercent: Double,
+        resetsAt: Date?,
+        subtitle: String?,
+        section: String? = nil,
+        sectionNote: String? = nil
+    ) {
+        self.section = section
+        self.sectionNote = sectionNote
+        self.label = label
+        self.usedPercent = usedPercent
+        self.resetsAt = resetsAt
+        self.subtitle = subtitle
+    }
 
     var remainingPercent: Double {
         max(0, min(100, 100 - usedPercent))
