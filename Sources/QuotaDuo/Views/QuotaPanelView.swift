@@ -314,8 +314,9 @@ enum Formatters {
         if remaining <= 0 {
             return "已重置"
         }
-        let hours = Int(remaining) / 3600
-        let minutes = (Int(remaining) % 3600) / 60
+        let totalMinutes = max(1, Int((remaining / 60).rounded()))
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
         if hours >= 48 {
             let days = hours / 24
             let remHours = hours % 24
@@ -324,6 +325,6 @@ enum Formatters {
         if hours >= 1 {
             return "\(hours)时\(minutes)分后"
         }
-        return "\(max(minutes, 1))分后"
+        return "\(minutes)分后"
     }
 }

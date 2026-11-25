@@ -104,12 +104,28 @@ struct CodexClient: Sendable {
             label = isShort ? "Session" : "Weekly"
         }
 
+        let isIdleReset = Self.isIdleResetWindow(window, now: now)
+
         return UsageLine(
             label: label,
             usedPercent: usedPercent.clampedPercent,
-            resetsAt: resetAt,
-            subtitle: nil
+            resetsAt: isIdleReset ? nil : resetAt,
+            subtitle: isIdleReset ? "可用" : nil
         )
+    }
+
+    private static func isIdleResetWindow(_ window: DirectWindow, now: Date) -> Bool {
+        guard let usedPercent = window.usedPercent, usedPercent <= 0,
+              let duration = window.limitWindowSeconds, duration > 0 else {
+            return false
+        }
+        if let resetAfter = window.resetAfterSeconds {
+            return resetAfter >= duration - 1
+        }
+        if let resetAt = window.resetAt.map({ Date(timeIntervalSince1970: $0) }) {
+            return resetAt.timeIntervalSince(now) >= duration - 5
+        }
+        return false
     }
 
     private func authFileURL() -> URL {
@@ -365,11 +381,13 @@ private extension CodexClient {
     struct DirectWindow: Decodable {
         let usedPercent: Double?
         let resetAt: Double?
+        let resetAfterSeconds: Double?
         let limitWindowSeconds: Double?
 
         enum CodingKeys: String, CodingKey {
             case usedPercent = "used_percent"
             case resetAt = "reset_at"
+            case resetAfterSeconds = "reset_after_seconds"
             case limitWindowSeconds = "limit_window_seconds"
         }
     }
