@@ -23,10 +23,10 @@ description: >-
 
 1. 用户会把 `/usage` 的打印结果复制出来，连同一句「写入 QuotaDuo 额度」一起贴进一个还能输入的 agy 窗口。优先解析这条消息里贴上的 Models & Quota 表格。
 2. 消息里没有这张表时，停下来，说明做法：先在已登录的窗口打 `/usage`，复制整段输出，再到一个还能打字的窗口粘贴，并加上「写入 QuotaDuo 额度」。不要自己去跑命令代替 `/usage`。
-3. 从贴上的表提取下面三组里**实际出现**的窗口。某一组没有 5 小时窗口，就不要补一个。
-   - `Gemini`：Gemini Models（例如 Hydrogen、Flash）
-   - `Claude / GPT`：Claude and GPT Models
-   - `Argon`：Gemini 4 Argon
+3. 跟着粘贴内容里的标题分组，不要自己补一组。某一组没有 5 小时窗口，就不要补一个。
+   - 标题是 `GEMINI MODELS`：`title` 写 `Gemini`。模型名原样放进 `models`，包括 Argon、Neon、Carbon、Hydrogen。Argon 已经并进这一组的 Weekly 和 Five Hour，不要再单独开 `Argon` 组。
+   - 标题是 `CLAUDE AND GPT MODELS`：`title` 写 `Claude / GPT`。
+   - 只有粘贴里仍单独出现 `GEMINI 4 ARGON` 这种旧标题时，才保留第三组，`title` 写 `Argon`。
 4. 每个窗口：
    - 周额度的 `label` 写 `周`，Five Hour 的 `label` 写 `5时`。
    - `remainingPercent` 用表上的剩余百分比，例如 `98.39`。
@@ -43,10 +43,10 @@ description: >-
   "groups": [
     {
       "title": "Gemini",
-      "models": "Gemini 4 Hydrogen, Gemini 3.8 Flash",
+      "models": "Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen",
       "windows": [
-        {"label": "周", "remainingPercent": 98.39, "resetsAt": "2026-11-24T08:12:00+09:00"},
-        {"label": "5时", "remainingPercent": 94.96, "resetsAt": "2026-11-17T13:12:00+09:00"}
+        {"label": "周", "remainingPercent": 100},
+        {"label": "5时", "remainingPercent": 100}
       ]
     },
     {
@@ -56,16 +56,9 @@ description: >-
         {"label": "周", "remainingPercent": 100},
         {"label": "5时", "remainingPercent": 100}
       ]
-    },
-    {
-      "title": "Argon",
-      "models": "Gemini 4 Argon",
-      "windows": [
-        {"label": "周", "remainingPercent": 100}
-      ]
     }
   ]
 }
 ```
 
-`writtenAt` 是写入时刻。`title` 必须是 `Gemini`、`Claude / GPT`、`Argon` 之一。没有的组不要空着写进去。
+`writtenAt` 是写入时刻。`title` 用 `Gemini` 或 `Claude / GPT`。Argon 写在 Gemini 的 `models` 里。没有的组不要空着写进去。`Quota available` 的窗口不要写 `resetsAt`。
